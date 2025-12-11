@@ -1,0 +1,2 @@
+This folder contains learned policies using the solutions of the exercise. You may use them to play around with the
+evaluation script and your environment implementation, as well as to compare your own learned policies against them.

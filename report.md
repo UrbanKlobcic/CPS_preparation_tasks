@@ -1,0 +1,1 @@
+You can write your report in Markdown format or using LaTeX.
