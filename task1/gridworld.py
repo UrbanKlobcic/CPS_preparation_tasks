@@ -47,18 +47,24 @@ class GridWorldEnv:
 
     def reset(self, rng: jax.Array) -> Tuple[Dict[str, jax.Array], GridWorldState]:
         rng_agent, rng_target, rng_dir = jax.random.split(rng, 3)
-
-        agent_pos = None  # TODO: initialize agent position randomly
-        target_pos = None  # TODO: initialize target position randomly
+        
+        
+        agent_pos = jax.random.randint(rng_agent, (2,), 0, self.size, dtype=jnp.int32)   # TODO: initialize agent position randomly
+        target_pos = jax.random.randint(rng_target, (2,), 0, self.size, dtype=jnp.int32) # TODO: initialize target position randomly
 
         # Ensure agent and target are not identical.
-        same = None  # TODO: check if agent_pos and target_pos are the same position
+        same = jnp.all(agent_pos == target_pos) # TODO: check if agent_pos and target_pos are the same position
 
         # If same, shift target by +1 (wrap) on both coordinates.
-        target_pos = None  # TODO: use jax.lax.cond to conditionally update target_pos
+        target_pos = jax.lax.cond(
+            same,
+            lambda _: (target_pos + 1) % self.size,
+            lambda _: target_pos,
+            operand=None
+        )   # TODO: use jax.lax.cond to conditionally update target_pos
 
-        direction = None  # TODO: initialize direction randomly
-
+        direction = jax.random.randint(rng_dir, (), 0, self.num_dirs, dtype=jnp.int32)  # TODO: initialize direction randomly
+ 
         state = GridWorldState(agent_pos=agent_pos, target_pos=target_pos, direction=direction)
         obs = self._get_obs(state)
         return obs, state
@@ -73,7 +79,10 @@ class GridWorldEnv:
 
         def move_forward(pos: jax.Array, dir_idx: jax.Array) -> jax.Array:
             # TODO: compute new position by moving in the current direction (hint: self.direction_to_move)
-            new_pos = None
+            step_vec = self.direction_to_move[dir_idx]
+            new = pos + step_vec
+            # Clip to grid
+            new_pos = jnp.clip(new, 0, self.size - 1)
 
             return new_pos
 
@@ -82,22 +91,37 @@ class GridWorldEnv:
         new_direction = direction
 
         # Action == 1: move forward
-        new_pos = None  # TODO: use jax.lax.cond to conditionally update new_pos using move_forward
+        new_pos = jax.lax.cond(
+            action == 1,
+            lambda _: move_forward(agent_pos, direction),
+            lambda _: new_pos,
+            operand=None
+        )  # TODO: use jax.lax.cond to conditionally update new_pos using move_forward
 
         # Action == 2: turn left
-        new_direction = None  # TODO: use jax.lax.cond to conditionally update new_direction for left turn
+        new_direction = jax.lax.cond(
+            action == 2,
+            lambda _: (direction - 1) % self.num_dirs,
+            lambda _: new_direction,
+            operand=None
+        )  # TODO: use jax.lax.cond to conditionally update new_direction for left turn
 
         # Action == 3: turn right
-        new_direction = None  # TODO: use jax.lax.cond to conditionally update new_direction for right turn
+        new_direction = new_direction = jax.lax.cond(
+            action == 3,
+            lambda _: (direction + 1) % self.num_dirs,
+            lambda _: new_direction,
+            operand=None
+        )  # TODO: use jax.lax.cond to conditionally update new_direction for right turn
 
-        done = None  # TODO: check if new_pos matches target_pos
-        reward = None  # TODO: assign reward of 1.0 if done else 0.0
+        done = jnp.all(new_pos == target_pos)  # TODO: check if new_pos matches target_pos
+        reward = jnp.where(done, 1.0, 0.0)  # TODO: assign reward of 1.0 if done else 0.0
 
         new_state = GridWorldState(agent_pos=new_pos, target_pos=target_pos, direction=new_direction)
         obs = self._get_obs(new_state)
 
         info = {
-            "distance": None,  # TODO: compute Manhattan distance between new_pos and target_pos
+            "distance": jnp.sum(jnp.abs(new_pos - target_pos)),  # TODO: compute Manhattan distance between new_pos and target_pos
         }
         return obs, new_state, reward, done, info
 
