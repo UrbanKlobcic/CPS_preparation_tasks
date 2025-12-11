@@ -23,4 +23,6 @@ exec $SHELL
 
 source .venv/bin/activate
 
+install all the needed libraries of the project. 
+
 python {code you want to run}

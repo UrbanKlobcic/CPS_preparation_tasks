@@ -62,7 +62,7 @@ def main():
     render_grid(env, obs, step_idx=0, reward=0.0, done=False, info={"distance": "n/a"})
 
     # Run a short random rollout
-    num_steps = 15
+    num_steps = 1000
 
     for t in range(1, num_steps + 1):
         rng, rng_action = jax.random.split(rng)

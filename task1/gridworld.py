@@ -143,7 +143,7 @@ if __name__ == "__main__":
     # JIT the step method
     step_jit = jax.jit(env.step)
 
-    for _ in range(10):
+    for _ in range(1000):
         rng, rng_action = jax.random.split(rng)
         action = jax.random.randint(rng_action, (), 0, env.num_actions, dtype=jnp.int32)
 
