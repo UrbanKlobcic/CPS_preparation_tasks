@@ -55,7 +55,9 @@ def render_ascii(size, agent_pos, target_pos, direction):
     return "\n".join(lines)
 
 
-def _host_print_step(step_idx, action, agent_pos, target_pos, direction, reward, done, distance, size):
+def _host_print_step(
+    step_idx, action, agent_pos, target_pos, direction, reward, done, distance, size
+):
     """
     Host-side printing function used by jax.debug.callback.
     Values arrive as numpy scalars/arrays on the host.
@@ -73,7 +75,9 @@ def _host_print_step(step_idx, action, agent_pos, target_pos, direction, reward,
         print(render_ascii(size, agent_pos, target_pos, direction))
         return
 
-    action_name = ACTION_NAMES[action] if 0 <= action < len(ACTION_NAMES) else str(action)
+    action_name = (
+        ACTION_NAMES[action] if 0 <= action < len(ACTION_NAMES) else str(action)
+    )
 
     print(f"\nStep {step_idx + 1}")
     print(f"Action: {action} ({action_name})")
@@ -128,7 +132,9 @@ def make_greedy_runner(env: GridWorldEnv, agent: ReinforceAgent):
             rng, step_rng = jax.random.split(rng)
             action = best_action(params, state)
 
-            obs2, next_state, reward, step_done, info = env.step(step_rng, state, action)
+            obs2, next_state, reward, step_done, info = env.step(
+                step_rng, state, action
+            )
             agent_pos2, target_pos2, direction2 = next_state
             distance = jnp.sum(jnp.abs(agent_pos2 - target_pos2)).astype(jnp.int32)
 
@@ -147,6 +153,7 @@ def make_greedy_runner(env: GridWorldEnv, agent: ReinforceAgent):
 
             # Debug printing
             if debug:
+
                 def _do_cb(_):
                     jax.debug.callback(
                         _host_print_step,
@@ -202,7 +209,9 @@ def run_episode(agent: ReinforceAgent, max_steps=100, seed=123, debug=False):
         distance = int(jnp.sum(jnp.abs(agent_pos - target_pos)))
 
         print("\n=== Evaluation episode (greedy) ===")
-        print(f"Finished. done={done_py}, steps_taken={steps_py}, final_distance={distance}")
+        print(
+            f"Finished. done={done_py}, steps_taken={steps_py}, final_distance={distance}"
+        )
         print(render_ascii(env.size, agent_pos, target_pos, direction))
 
 
@@ -212,9 +221,12 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_size", type=int, default=64)
     parser.add_argument("--max_steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--debug", action="store_true",
-                        help="Enable step-by-step ASCII printing via jax.debug.callback")
-    parser.add_argument("--policy_path", type=str, default="policy_params.msgpack")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable step-by-step ASCII printing via jax.debug.callback",
+    )
+    parser.add_argument("--policy_path", type=str, default="../learned_policies/policy_params.msgpack")
     args = parser.parse_args()
 
     env = GridWorldEnv(size=args.size)

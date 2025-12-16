@@ -5,7 +5,8 @@ from typing import Any, Optional
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from flax import struct, serialization
+import flax.serialization as serialization
+from flax import struct
 import optax
 
 from gridworld import GridWorldEnv
@@ -17,12 +18,10 @@ class PolicyNet(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # TODO: implement a simple MLP with two hidden layers and tanh activations
-
-        x = None  # First hidden layer
-        x = None  # Activation
-        x = None  # Second hidden layer
-        x = None  # Activation
+        x = nn.Dense(self.hidden_size)(x)  # First hidden layer
+        x = nn.tanh(x)                     # Activation
+        x = nn.Dense(self.hidden_size)(x)  # Second hidden layer
+        x = nn.tanh(x)                     # Activation
         return nn.Dense(self.num_actions)(x)
 
 
@@ -64,14 +63,14 @@ class ReinforceAgent:
     """
 
     def __init__(
-            self,
-            env: GridWorldEnv,
-            learning_rate=3e-4,
-            discount_factor=0.95,
-            num_episodes=2000,
-            max_steps=50,
-            hidden_size=64,
-            seed=0,
+        self,
+        env: GridWorldEnv,
+        learning_rate=3e-4,
+        discount_factor=0.95,
+        num_episodes=2000,
+        max_steps=50,
+        hidden_size=64,
+        seed=0,
     ):
         self.env = env
         self.size = int(env.size)
@@ -105,7 +104,8 @@ class ReinforceAgent:
         """
         Save policy parameters using Flax serialization.
         """
-        # TODO: implement saving of self.state.params to the given path
+        with open(path, "wb") as f:
+            f.write(serialization.to_bytes(self.state.params))
 
     def load_params(self, path: str):
         """
@@ -113,8 +113,10 @@ class ReinforceAgent:
         The agent must be constructed with the same architecture
         (hidden_size, num_actions, etc.) so the parameter structure matches.
         """
-        # TODO: implement loading of parameters from the given path into params
-        params = None
+        with open(path, "rb") as f:
+            encoded_bytes = f.read()
+
+        params = serialization.from_bytes(self.state.params, encoded_bytes)
 
         self.state = ReinforceTrainState(
             params=params,
@@ -171,18 +173,27 @@ class ReinforceAgent:
 
     # Discounted returns
     def _returns(self, rewards):
-        # TODO: implement discounted returns computation, e.g. G_t = r_t + gamma * G_{t+1}, hint: use jax.lax.scan to loop backwards over rewards
-        return 0.0
+        def step(g_t1, r_t):
+            g_t = r_t + self.gamma * g_t1
+            return g_t, g_t # (carry, return value)
+
+        return jax.lax.scan(step, 0.0, rewards, reverse=True)[1]
 
     # One episode update
     def _train_one_episode(self, train_state: ReinforceTrainState, max_steps: int):
-        params, opt_state, rng = train_state.params, train_state.opt_state, train_state.rng
+        params, opt_state, rng = (
+            train_state.params,
+            train_state.opt_state,
+            train_state.rng,
+        )
 
         rng, rng_reset, rng_ep = jax.random.split(rng, 3)
         _, init_state = self.env.reset(rng_reset)
 
         def loss_fn(p):
-            logps, rewards, actives, rng_out = self._rollout(p, rng_ep, init_state, max_steps)
+            logps, rewards, actives, rng_out = self._rollout(
+                p, rng_ep, init_state, max_steps
+            )
             returns = self._returns(rewards)
 
             # Classic REINFORCE loss (mask by actives)
@@ -191,7 +202,9 @@ class ReinforceAgent:
 
             return loss, (ep_return, rng_out)
 
-        (loss, (ep_return, rng_out)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        (loss, (ep_return, rng_out)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+            params
+        )
 
         updates, opt_state = self.optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
@@ -201,16 +214,22 @@ class ReinforceAgent:
         return new_state, metrics
 
     # Train for n episodes
-    def _train_n_episodes(self, train_state: ReinforceTrainState, n_episodes: int, max_steps: int):
+    def _train_n_episodes(
+        self, train_state: ReinforceTrainState, n_episodes: int, max_steps: int
+    ):
         def body(carry, _):
             carry, metrics = self._train_one_episode(carry, max_steps)
             return carry, metrics
 
-        train_state, metrics = jax.lax.scan(body, train_state, xs=None, length=n_episodes)
+        train_state, metrics = jax.lax.scan(
+            body, train_state, xs=None, length=n_episodes
+        )
         return train_state, metrics
 
     # Public API
-    def train(self, num_episodes: Optional[int] = None, max_steps: Optional[int] = None):
+    def train(
+        self, num_episodes: Optional[int] = None, max_steps: Optional[int] = None
+    ):
         n_eps = self.num_episodes if num_episodes is None else int(num_episodes)
         m_steps = self.max_steps if max_steps is None else int(max_steps)
 
@@ -249,5 +268,6 @@ if __name__ == "__main__":
     print("Mean return (last 100):", float(jnp.mean(returns[-100:])))
 
     # Save policy params
-    agent.save_params("policy_params.msgpack")
-    print("Saved policy params to policy_params.msgpack")
+    path = "../learned_policies/policy_params.msgpack"
+    agent.save_params(path)
+    print(f"Saved policy params to {path}")
