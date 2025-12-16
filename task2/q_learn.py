@@ -44,13 +44,20 @@ class QAgent:
         self.num_dirs = int(env.num_dirs)
         self.num_actions = int(env.num_actions)
 
-        self.num_states = None  # TODO: compute the total number of states
-
-        # Q-table initialization
-        self.q_table = jnp.zeros((self.num_states, self.num_actions),
-                                 dtype=jnp.float32)  # (Optional TODO: see hint in the assignment)
+        self.num_states = env.size ** 2 * 4 * env.size**2  # TODO: compute the total number of states
 
         self.rng = jax.random.PRNGKey(seed)
+
+        # Q-table initialization
+        # self.q_table = jnp.zeros((self.num_states, self.num_actions),
+        #                          dtype=jnp.float32)  # (Optional TODO: see hint in the assignment)
+        self.q_table = jax.random.uniform(
+            self.rng,
+            (self.num_states, self.num_actions),
+            minval=0.001,
+            maxval=0.1,
+            dtype=jnp.float32
+        )
 
         # JIT-compiled training core
         start_time = time.perf_counter()
@@ -82,7 +89,8 @@ class QAgent:
         y_t = target_pos[1]
         d = direction
 
-        idx = None  # TODO: compute the correct index from the state components
+        # TODO: compute the correct index from the state components
+        idx = x_a * (S * D * S * S) + y_a * (D * S * S) + d * (S * S) + x_t * S + y_t
         return idx.astype(jnp.int32)
 
     # Policy helpers
@@ -93,7 +101,8 @@ class QAgent:
         Returns: jnp.int32 scalar action
         """
         idx = self.state_to_index(state)
-        return None  # TODO: return the best action for the given state
+        # TODO: return the best action for the given state
+        return jnp.argmax(q_table[idx], axis=-1).astype(jnp.int32)
 
     def _epsilon_greedy(self, q_table, state, rng) -> jnp.ndarray:
         """
@@ -107,7 +116,10 @@ class QAgent:
         rng_eps, rng_act = jax.random.split(rng, 2)
 
         # TODO: implement epsilon-greedy action selection (hint: compute both greedy and random actions and then use jax.lax.select)
-
+        prob = jax.random.uniform(rng_eps)
+        greedy_action = self._best_action(q_table, state)
+        random_action = jax.random.randint(rng_act, (), 0, self.num_actions, dtype=jnp.int32)
+        return jax.lax.select(prob < self.epsilon, random_action, greedy_action)
         return None
 
     # One-step Q-learning update
@@ -121,12 +133,16 @@ class QAgent:
         idx = self.state_to_index(state)
         next_idx = self.state_to_index(next_state)
 
-        current_q = None  # TODO: get the current Q-value e.g. Q(s, a)
-        best_next_q = None  # TODO: get the best next Q-value e.g. max_a' Q(s', a')
+        # TODO: get the current Q-value e.g. Q(s, a)
+        current_q = q_table[idx, action]
+        # TODO: get the best next Q-value e.g. max_a' Q(s', a')
+        best_next_q = jnp.max(q_table[next_idx])
 
         # Terminal handling
-        td_target = None  # TODO: compute the TD target e.g. r + gamma * max_a' Q(s', a') * (1 - done)
-        new_q = None  # TODO: compute the new Q-value e.g. Q(s, a) + alpha * (td_target - Q(s, a))
+        # TODO: compute the TD target e.g. r + gamma * max_a' Q(s', a') * (1 - done)
+        td_target = reward + self.discount_factor * best_next_q * (1.0 - done)
+        # TODO: compute the new Q-value e.g. Q(s, a) + alpha * (td_target - Q(s, a))
+        new_q = current_q + self.learning_rate * (td_target - current_q)
 
         q_table = q_table.at[idx, action].set(new_q)
         return q_table
@@ -210,7 +226,7 @@ if __name__ == "__main__":
         env,
         learning_rate=0.1,
         discount_factor=0.95,
-        epsilon=0.2,
+        epsilon=0.4,
         train_steps=1_000_000,  # reduce for quicker testing and see hint in the assignment
         seed=0,
     )
@@ -226,9 +242,9 @@ if __name__ == "__main__":
         os.remove(q_path)
 
     start_time = time.perf_counter()
-    agent.train()  # runs for agent.train_steps
+    agent.train(10_000_000)  # runs for agent.train_steps
     end_time = time.perf_counter()
     agent.save_q_table(q_path)
-    print("QAgent trained and saved.")
+    print("QAgent trained and saved.", "Time taken (s):", (end_time - start_time))
 
     print("Done.")
