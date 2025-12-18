@@ -268,6 +268,6 @@ if __name__ == "__main__":
     print("Mean return (last 100):", float(jnp.mean(returns[-100:])))
 
     # Save policy params
-    path = "../learned_policies/policy_params.msgpack"
+    path = "policy_params.msgpack"
     agent.save_params(path)
     print(f"Saved policy params to {path}")

@@ -226,7 +226,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable step-by-step ASCII printing via jax.debug.callback",
     )
-    parser.add_argument("--policy_path", type=str, default="../learned_policies/policy_params.msgpack")
+    parser.add_argument("--policy_path", type=str, default="policy_params.msgpack")
     args = parser.parse_args()
 
     env = GridWorldEnv(size=args.size)
