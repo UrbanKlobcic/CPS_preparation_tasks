@@ -44,7 +44,8 @@ class QAgent:
         self.num_dirs = int(env.num_dirs)
         self.num_actions = int(env.num_actions)
 
-        self.num_states = env.size ** 2 * 4 * env.size**2  # TODO: compute the total number of states
+        # TODO: compute the total number of states
+        self.num_states = self.size ** 2 * self.num_dirs * self.size ** 2
 
         self.rng = jax.random.PRNGKey(seed)
 
@@ -120,7 +121,6 @@ class QAgent:
         greedy_action = self._best_action(q_table, state)
         random_action = jax.random.randint(rng_act, (), 0, self.num_actions, dtype=jnp.int32)
         return jax.lax.select(prob < self.epsilon, random_action, greedy_action)
-        return None
 
     # One-step Q-learning update
     def _q_update(self, q_table, state, action, next_state, reward, done):
@@ -242,7 +242,7 @@ if __name__ == "__main__":
         os.remove(q_path)
 
     start_time = time.perf_counter()
-    agent.train(10_000_000)  # runs for agent.train_steps
+    agent.train(1_000_000)  # runs for agent.train_steps
     end_time = time.perf_counter()
     agent.save_q_table(q_path)
     print("QAgent trained and saved.", "Time taken (s):", (end_time - start_time))
