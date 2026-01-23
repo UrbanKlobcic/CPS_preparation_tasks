@@ -237,6 +237,7 @@ def visualize_state_action_sequence(
         sequence: list[tuple[np.ndarray, np.ndarray]],
         gates: np.ndarray,
         recording_path: str = "rollout.rrd",
+        app_id: str = "flytrack_viz",
 ) -> None:
     """
     Visualize a rollout using Rerun and write it to `recording_path`.
@@ -252,7 +253,7 @@ def visualize_state_action_sequence(
     if len(sequence) == 0:
         raise ValueError("Empty sequence")
 
-    rr.init("flytrack_viz", spawn=False)
+    rr.init(app_id, spawn=False)
     rr.save(recording_path)
 
     # Static scene: world frame + gates
@@ -278,33 +279,166 @@ def visualize_state_action_sequence(
             rr.LineStrips3D([outer_loop, inner_loop]),
             static=True,
         )
+    
+    # Static trajectory polyline
+    positions = np.stack([np.asarray(x, dtype=np.float32)[0:3] for (x, _) in sequence], axis=0)
+    rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True) #if we want "growing" trajectory, we would log it per step without static=True
 
-    # TODO: Trajectory visualization
-    # TODO:
-    #   - Extract positions p_t from each state x_t (hint: p_t = x_t[0:3])
-    #   - Build a (T, 3) array and log it as a polyline:
-    #       rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True)
-    #
-    # positions = ...
-    # rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True)
+    # Per-step logging: drone + plots
+    dt = 0.01  # 100Hz default 
+    cam_ray_len = 2.0  # meters
 
-    # TODO: Per-step logging (drone + time series)
-    #   For each step t:
-    #     - set a time axis (sequence index):
-    #         rr.set_time("step", sequence=t)
-    #     - unpack x into:
-    #         pos = x[0:3]
-    #         quat = x[9:13]         # [qw,qx,qy,qz]
-    #         vel = x[3:6]
-    #         body_rates = x[13:16]  # [wx,wy,wz]
-    #     - convert quat -> Euler:
-    #         euler = quat_to_euler_rpy(quat)
-    #     - draw drone model:
-    #         motors_world, arms, cam_dir_world = _drone_body_points_world(pos, euler)
-    #         rr.log("world/drone/motors", rr.Points3D(...))
-    #         rr.log("world/drone/arms", rr.LineStrips3D(...))
-    #     - log scalars:
-    #         speed = ||vel||, angular_speed = ||body_rates||, and the 4 action components
-    #
+    for t, (x, u) in enumerate(sequence):
+        x = np.asarray(x, dtype=np.float32).reshape(-1)
+        u = np.asarray(u, dtype=np.float32).reshape(-1)
 
-    raise NotImplementedError("TODO: implement trajectory + per-step logging")
+        if x.shape[0] != 21:
+            raise ValueError(f"State at t={t} has shape {x.shape}, expected (21,)")
+        if u.shape[0] != 4:
+            raise ValueError(f"Action at t={t} has shape {u.shape}, expected (4,)")
+
+        # REQUIRED time handling (per sheet)
+        rr.set_time("step", sequence=t)
+        rr.set_time("sim_time", duration=t * dt)
+
+        pos = x[0:3]
+        vel = x[3:6]
+        quat = x[9:13]          # [qw,qx,qy,qz]
+        body_rates = x[13:16]   # [wx,wy,wz]
+
+        # quat -> Euler (roll,pitch,yaw)
+        euler = quat_to_euler_rpy(quat)
+
+        # Drone geometry in world
+        motors_world, arms, cam_dir_world = _drone_body_points_world(pos, euler)
+
+        # Drone visuals
+        rr.log("world/drone/center", rr.Points3D([pos]))
+        rr.log("world/drone/motors", rr.Points3D(motors_world))
+        rr.log("world/drone/arms", rr.LineStrips3D(arms))
+
+        # Camera ray
+        cam_end = pos + cam_dir_world * cam_ray_len
+        cam_ray = np.stack([pos, cam_end], axis=0).astype(np.float32)
+        rr.log("world/drone/camera_ray", rr.LineStrips3D([cam_ray]))
+
+        # Time-series scalars
+        speed = float(np.linalg.norm(vel))
+        ang_speed = float(np.linalg.norm(body_rates))
+
+        _log_scalar("plots/speed", speed)
+        _log_scalar("plots/angular_speed", ang_speed)
+
+        _log_scalar("plots/actions/u_roll", float(u[0]))
+        _log_scalar("plots/actions/u_pitch", float(u[1]))
+        _log_scalar("plots/actions/u_yaw", float(u[2]))
+        _log_scalar("plots/actions/u_thrust", float(u[3]))
+
+        # Optional (very useful) orientation traces
+        _log_scalar("plots/orientation/roll", float(euler[0]))
+        _log_scalar("plots/orientation/pitch", float(euler[1]))
+        _log_scalar("plots/orientation/yaw", float(euler[2]))
+    
+
+if __name__ == "__main__":
+    import argparse
+    import numpy as np
+        
+    
+    gates_np  = np.array(
+    [
+        [0, 12.500000, 2.000000, 1.350000, -0.707107, 0.000000, 0.000000, 0.707107],  # yaw = 270.00
+        [1, 6.500000, 6.000000, 1.350000, -0.382684, 0.000000, 0.000000, 0.923879],  # yaw = 225.00
+        [2, 5.500000, 14.000000, 1.350000, -0.258819, 0.000000, 0.000000, 0.965926],  # yaw = 210.00
+        [3, 2.500000, 24.000000, 1.350000, 0.000000, 0.000000, 0.000000, 1.000000],  # yaw = 180.00
+        [4, 7.500000, 30.000000, 1.350000, -0.642788, 0.000000, 0.000000, 0.766044],  # yaw = 260.00
+        [8, 18.500000, 22.000000, 1.350000, -0.087155, 0.000000, 0.000000, 0.996195],  # yaw = 190.00
+        [9, 20.500000, 14.000000, 1.350000, 0.087155, 0.000000, 0.000000, 0.996195],  # yaw = 170.00
+        [10, 18.500000, 6.000000, 1.350000, 0.382684, 0.000000, 0.000000, 0.923879],  # yaw = 135.00
+    ], dtype=np.float32,)
+
+    def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarray]]:
+        data = np.load(npy_path, allow_pickle=True)
+
+        # Case A: already a list/array of (x,u) pairs (object dtype)
+        if data.dtype == object:
+            seq = []
+            for i, item in enumerate(list(data)):
+                if not (isinstance(item, (list, tuple)) and len(item) == 2):
+                    raise ValueError(f"Object rollout entry {i} is not a (x,u) pair.")
+                x, u = np.asarray(item[0], dtype=np.float32), np.asarray(item[1], dtype=np.float32)
+                x = x.reshape(-1)
+                u = u.reshape(-1)
+                if x.shape[0] != 21 or u.shape[0] != 4:
+                    raise ValueError(f"Entry {i}: expected x(21), u(4), got x{x.shape}, u{u.shape}")
+                seq.append((x, u))
+            return seq
+
+        # Case B: numeric matrix rollout
+        if data.ndim != 2:
+            raise ValueError(f"Expected 2D rollout array, got shape {data.shape}")
+
+        T, D = data.shape
+
+        # (T, 25) => [21 | 4]
+        if D == 25:
+            xs = data[:, :21].astype(np.float32)
+            us = data[:, 21:25].astype(np.float32)
+            return [(xs[t], us[t]) for t in range(T)]
+
+        # (T, 22) => [18 | 4]  (pad state to 21 for visualization)
+        if D == 22:
+            xs18 = data[:, :18].astype(np.float32)
+            us = data[:, 18:22].astype(np.float32)
+
+            seq = []
+            for t in range(T):
+                s = xs18[t]
+                x = np.zeros((21,), dtype=np.float32)
+
+                # Assumed common prefix layout:
+                # pos(3), vel(3), acc(3), quat(4), body_rates(3)  => 16 values
+                x[0:3] = s[0:3]
+                x[3:6] = s[3:6]
+                x[6:9] = s[6:9]
+                x[9:13] = s[9:13]
+                x[13:16] = s[13:16]
+
+                # Remaining 2 values in s: we map them to:
+                #  - previous thrust (x[19]) if it looks like [-1,1]
+                #  - battery (x[20]) if it looks like ~[22,24]
+                prev_like = float(s[16])
+                batt_like = float(s[17])
+                if -1.1 <= prev_like <= 1.1:
+                    x[19] = prev_like  # u_thrust_prev
+                if 20.0 <= batt_like <= 30.0:
+                    x[20] = batt_like  # battery_V
+                else:
+                    x[20] = 24.0
+
+                seq.append((x, us[t]))
+            return seq
+
+        raise ValueError(
+            f"Unsupported rollout shape (T, D)=({T}, {D}). "
+            "Expected D=25 ([21|4]) or D=22 ([18|4]) or object list of (x,u)."
+        )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--rollout",
+        type=str,
+        default="flytrack_eval_trajectory_0.npy",
+        help="Path to rollout .npy (e.g. example rollout.npy).",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="rollout.rrd",
+        help="Output .rrd file path.",
+    )
+    args = parser.parse_args()
+
+    seq = _load_rollout_as_sequence(args.rollout)
+    visualize_state_action_sequence(seq, gates_np, recording_path=args.out)
+    print(f"Wrote: {args.out}")
