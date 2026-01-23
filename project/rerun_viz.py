@@ -279,41 +279,13 @@ def visualize_state_action_sequence(
             rr.LineStrips3D([outer_loop, inner_loop]),
             static=True,
         )
-
-    # TODO: Trajectory visualization
-    # TODO:
-    #   - Extract positions p_t from each state x_t (hint: p_t = x_t[0:3])
-    #   - Build a (T, 3) array and log it as a polyline:
-    #       rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True)
-    #
-    # positions = ...
-    # rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True)
-
-    # TODO: Per-step logging (drone + time series)
-    #   For each step t:
-    #     - set a time axis (sequence index):
-    #         rr.set_time("step", sequence=t)
-    #     - unpack x into:
-    #         pos = x[0:3]
-    #         quat = x[9:13]         # [qw,qx,qy,qz]
-    #         vel = x[3:6]
-    #         body_rates = x[13:16]  # [wx,wy,wz]
-    #     - convert quat -> Euler:
-    #         euler = quat_to_euler_rpy(quat)
-    #     - draw drone model:
-    #         motors_world, arms, cam_dir_world = _drone_body_points_world(pos, euler)
-    #         rr.log("world/drone/motors", rr.Points3D(...))
-    #         rr.log("world/drone/arms", rr.LineStrips3D(...))
-    #     - log scalars:
-    #         speed = ||vel||, angular_speed = ||body_rates||, and the 4 action components
-    #
     
     # Static trajectory polyline
     positions = np.stack([np.asarray(x, dtype=np.float32)[0:3] for (x, _) in sequence], axis=0)
-    rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True)
+    rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True) #if we want "growing" trajectory, we would log it per step without static=True
 
     # Per-step logging: drone + plots
-    dt = 0.01  # 100Hz default from the handout
+    dt = 0.01  # 100Hz default 
     cam_ray_len = 2.0  # meters
 
     for t, (x, u) in enumerate(sequence):
