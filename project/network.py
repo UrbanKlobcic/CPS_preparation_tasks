@@ -1,3 +1,6 @@
+"""
+Actor-Critic Network for PPO
+"""
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
@@ -16,7 +19,7 @@ class ActorCritic(nn.Module):
         else:
             activation = nn.tanh
 
-        WIDTH = 256
+        WIDTH = 512
         
         # Actor Path
         actor_mean = nn.Dense(

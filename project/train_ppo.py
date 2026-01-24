@@ -1,13 +1,21 @@
+"""
+Train a PPO agent on the drone race env.
+
+Based on purejaxrl PPO implementation
+https://github.com/luchris429/purejaxrl/blob/main/purejaxrl/ppo_continuous_action.py
+
+Usage:
+    python train_ppo.py [--resume checkpoints/ppo_drone.ckpt]
+"""
+import argparse
+import os
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import numpy as np
 import optax
 import mlflow
-from flax.linen.initializers import constant, orthogonal
-from typing import Sequence, NamedTuple
+from typing import NamedTuple
 from flax.training.train_state import TrainState
-import distrax
 from wrappers import LogWrapper, FlattenObservationWrapper, VecEnv, AutoResetWrapper
 from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS
 import checkpoints
@@ -23,7 +31,7 @@ class Transition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
 
-def make_train(config):
+def make_train(config, initial_params=None):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
@@ -58,11 +66,16 @@ def make_train(config):
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
             optax.adam(learning_rate=linear_schedule, eps=1e-5),
         )
+        
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
             tx=tx,
         )
+
+        # RESUME LOGIC: Override params if provided
+        if initial_params is not None:
+            train_state = train_state.replace(params=initial_params)
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -211,9 +224,9 @@ def make_train(config):
             
             loss_info = jax.tree.map(lambda x: x.mean(), loss_info)
 
-            # Debug Callback
+            # Debug Callback for Logging
             if config.get("DEBUG"):
-                def callback(info, loss_info, update_iter):
+                def debug_callback(info, loss_info, update_iter):
                     _, (v_loss, a_loss, ent) = loss_info
                     mask = info["returned_episode"]
                     
@@ -232,8 +245,8 @@ def make_train(config):
                     
                     print(
                         f"Step {global_step:<9} | "
-                        f"Ret: {avg_ret:<7.2f} | "
-                        f"Len: {avg_len:<5.1f} | "
+                        f"Ret: {avg_ret:<7.1f} | "
+                        f"Len: {avg_len:<5.0f} | "
                         f"Gates: {avg_gates:<5.2f} | "
                         f"OOB: {crash_rate:<4.2f} | "
                         f"ValLoss: {float(v_loss):<7.4f}"
@@ -249,7 +262,25 @@ def make_train(config):
                             "entropy": float(ent),
                         }, step=int(global_step))
 
-                jax.debug.callback(callback, metric, loss_info, update_i)
+                jax.debug.callback(debug_callback, metric, loss_info, update_i)
+
+            # Periodic Checkpoint Callback
+            if config.get("CHECKPOINT_FREQ") is not None:
+                def save_callback(state, update_iter):
+                    # Save a periodic checkpoint with step number
+                    step_num = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
+                    temp_config = config.copy()
+                    temp_config["RUN_NAME"] = f"{config['RUN_NAME']}_step{step_num}"
+                    checkpoints.save_checkpoint(state, temp_config)
+
+                # Execute callback only on specific steps
+                is_save_step = (update_i > 0) & ((update_i + 1) % config["CHECKPOINT_FREQ"] == 0)
+                jax.lax.cond(
+                    is_save_step,
+                    lambda s: jax.debug.callback(save_callback, s, update_i),
+                    lambda s: None,
+                    train_state
+                )
 
             runner_state = (train_state, env_state, last_obs, rng)
             return runner_state, metric
@@ -266,13 +297,18 @@ def make_train(config):
     return train
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--no-track", action="store_true", help="Disable MLflow logging")
+    args = parser.parse_args()
+    
     config = {
-        "LR": 3e-4,
+        "LR": 5e-4,
         "NUM_ENVS": 256,
         "NUM_STEPS": 256,
-        "TOTAL_TIMESTEPS": 5e6,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 4,
+        "TOTAL_TIMESTEPS": 1e8,
+        "UPDATE_EPOCHS": 8,
+        "NUM_MINIBATCHES": 8,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
         "CLIP_EPS": 0.2,
@@ -281,19 +317,45 @@ if __name__ == "__main__":
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "tanh",
         "ANNEAL_LR": True,
-        "RUN_NAME": "ppo_drone_race",
+        "RUN_NAME": "ppo_drone",
         "CKPT_DIR": "checkpoints",
         "DEBUG": True,
+        "CHECKPOINT_FREQ": 1e6,
     }
-
-    mlflow.set_experiment("DroneRacing_PPO")
-    with mlflow.start_run(run_name=config["RUN_NAME"]):
+    
+    loaded_params = None
+    if args.resume:
+        if os.path.exists(args.resume):
+            loaded_params = checkpoints.load_checkpoint(args.resume)
+            print(f"Resuming training with weights from {args.resume}")
+        else:
+            raise FileNotFoundError(f"Checkpoint not found at {args.resume}")
+    
+    if not args.no_track:
+        mlflow.set_experiment("DroneRacing_PPO")
+        mlflow_run = mlflow.start_run(run_name=config["RUN_NAME"])
         mlflow.log_params(config)
+    else:
+        print("MLflow tracking disabled.")
+        mlflow_run = None
+    
+    try:
         rng = jax.random.PRNGKey(42)
-        train_jit = jax.jit(make_train(config))
+        train_jit = jax.jit(make_train(config, initial_params=loaded_params))
+        
         print("Starting training...")
         out = train_jit(rng)
         print("Training finished.")
-        checkpoints.save_checkpoint(out["runner_state"][0], config)
-        eval.evaluate_and_export(out["runner_state"][0], config)
-
+        
+        final_state = out["runner_state"][0]
+        ckpt_path = checkpoints.save_checkpoint(final_state, config)
+        
+        if not args.no_track and mlflow.active_run():
+            mlflow.log_artifact(ckpt_path)
+            print(f"Logged checkpoint artifact: {ckpt_path}")
+        
+        eval.evaluate_and_export(final_state, config)
+    
+    finally:
+        if mlflow.active_run():
+            mlflow.end_run()

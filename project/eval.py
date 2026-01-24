@@ -1,5 +1,4 @@
 import io
-import pickle
 import mlflow
 import jax
 import jax.numpy as jnp
@@ -7,8 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from network import ActorCritic
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, START_POS
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, START_POS, SIM_HZ
 from utils import quat_rotate
+from rerun_viz import visualize_state_action_sequence
 
 
 def generate_density_heatmap(trajectory):
@@ -91,9 +91,10 @@ def evaluate_and_export(train_state, config):
     print("Running evaluation rollout...")
     env = DroneRaceEnv()
     
-    # ZERO NOISE FOR EVALUATION
-    # Create a new params tuple with 0 noise
+    # zero noise for evaluation + start at gate 0
     eval_params = DEFAULT_PARAMS._replace(
+        max_episode_steps=SIM_HZ * 60,
+        initial_gate_id=0,
         noise_pos=0.0,
         noise_vel=0.0,
         noise_ori=0.0,
@@ -142,18 +143,35 @@ def evaluate_and_export(train_state, config):
 
     print(f"Evaluation finished. Steps: {len(trajectory)}, Total Reward: {total_reward}")
     
+    # 1. Save Raw Rollout (.npy)
     npy_path = "evaluation_rollout.npy"
-    with open(npy_path, "wb") as f:
-        pickle.dump(trajectory, f)
+    np.save(npy_path, np.array(trajectory, dtype=object))
     print(f"Saved rollout to {npy_path}")
+
     mlflow.log_artifact(npy_path)
     
+    # 2. Save Rerun Visualization (.rrd)
+    rrd_path = "rollout.rrd"
+    print(f"Generating Rerun recording to {rrd_path}...")
+    try:
+        # Convert JAX environment array to numpy for Rerun
+        gates_np = np.array(ENVIRONMENT)
+        visualize_state_action_sequence(
+            sequence=trajectory,
+            gates=gates_np,
+            recording_path=rrd_path,
+            app_id=f"eval_{config.get('RUN_NAME', 'drone')}"
+        )
+        print("Rerun recording generated.")
+        mlflow.log_artifact(rrd_path)
+    except Exception as e:
+        print(f"Failed to generate Rerun visualization: {e}")
+
+    # 3. Save Density Heatmap (.png)
     img_buf = generate_density_heatmap(trajectory)
-    
     heatmap_path = "position_density.png"
     with open(heatmap_path, "wb") as f:
         f.write(img_buf.getvalue())
     
     print(f"Saved density heatmap to {heatmap_path}")
     mlflow.log_artifact(heatmap_path)
-
