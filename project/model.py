@@ -53,8 +53,19 @@ class ModelParameters(NamedTuple):
 
 
 DEFAULT_PARAMS = ModelParameters(
-    tau=jnp.array([0.01, 0.01, 0.01, 0.01], dtype=jnp.float32),  # TODO: replace with fitted values
-    thrust_coeffs=jnp.zeros((6,), dtype=jnp.float32),  # TODO: replace with fitted values
+    tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029929455369710922, 0.025], dtype=jnp.float32),  # TODO: replace with fitted values
+    # tau=jnp.array([0.1, 0.5, 0.9, 0.01], dtype=jnp.float32),  # try
+    # tau=jnp.array([0.03020575, 0.03020575, 0.01274104, 0.01], dtype=jnp.float32),  # try
+    # tau=jnp.array([0.01, 0.01, 0.01, 0.01], dtype=jnp.float32),  # original values
+    thrust_coeffs=jnp.array([
+        1.,
+        1., 
+        1., 
+        1.,
+        1.,
+        1.,
+        ], dtype=jnp.float32),  # guess
+    # thrust_coeffs=jnp.ones((6,), dtype=jnp.float32),  # TODO: replace with fitted values
 
     max_rate=jnp.array([618.0, 618.0, 120.0], dtype=jnp.float32),
     m=1.0,
@@ -141,10 +152,12 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
 
     # 6) Integrate state based on computed acceleration
     # TODO: check if we need q or q_next here
-    a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, T / params.m])) + jnp.array([0.0, 0.0, -params.g])
+    a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, (T / params.m) - params.g]))
     vel_next = vel + a_thrust_world * dt
     pos_next = pos + vel_next * dt
 
+    # X) battery discharge 1V per minute
+    battery = battery - (dt / 60.0)  # optional
     # 7) Update state fields
     x_next = jnp.concatenate([
         pos_next,
