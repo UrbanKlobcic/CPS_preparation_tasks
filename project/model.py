@@ -66,22 +66,31 @@ def thrust_polynomial(u_thrust: jax.Array, battery_v: jax.Array, coeffs: jax.Arr
     """
     Voltage-dependent thrust polynomial:
     """
-    # TODO: implement as hinted in exercise sheet.
+    # c0 + c1*uth + c2*uth^2 + c3*uth^3 + c4*V + c5*(uth*V)
     # Hints:
     # - Keep types as float32.
-    raise NotImplementedError("TODO: implement thrust_polynomial")
+    u = jnp.array([1.0, u_thrust, u_thrust ** 2, u_thrust ** 3, battery_v, u_thrust * battery_v], dtype=jnp.float32)
+    return jnp.dot(coeffs, u)
 
 
 def first_order_delay(u_prev_applied: jax.Array, u_cmd: jax.Array, dt: float, tau: jax.Array) -> jax.Array:
     """
     First-order lag on controls.
     """
-    # TODO: implement first-order lag.
     # Hints:
     # - tau is shape (4,) and strictly positive.
     # - alpha should be shape (4,) and computed elementwise.
-    raise NotImplementedError("TODO: implement first_order_delay")
+    alpha = 1.0 - jnp.exp(-dt / tau)
+    u_delayed = u_prev_applied + alpha * (u_cmd - u_prev_applied)
+    return u_delayed
 
+
+def map_rates(u_delayed: jax.Array, max_rate: jax.Array) -> jax.Array:
+    """
+    Map delayed commands to body rates.
+    """
+    w_cmd = u_delayed[0:3] * max_rate * (jnp.pi / 180.0)  # rad/s
+    return w_cmd
 
 @jax.jit
 def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.Array:
@@ -110,14 +119,45 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
     x = jnp.asarray(x, dtype=jnp.float32)
     u = jnp.asarray(u, dtype=jnp.float32)
 
-    # Decode state
+    # 1) Decode state
     pos = x[0:3]
     vel = x[3:6]
     q = x[9:13]
     u_prev = x[16:20]
     battery = x[20]
 
-    raise NotImplementedError("TODO: implement step()")
+    # 2) First-order delay
+    u_delayed = first_order_delay(u_prev, u, dt, params.tau)
+
+    # 3) Map rates
+    body_rates = map_rates(u_delayed, params.max_rate)
+
+    # 4) Quaternion integration (Euler step)
+    q_next = quat_mul(q, jnp.array([0.0, body_rates[0], body_rates[1], body_rates[2]]) * dt / 2.0)
+    q_next = quat_normalize(q + q_next)
+
+    # 5) Thrust
+    T = thrust_polynomial(u_delayed[3], battery, params.thrust_coeffs)
+
+    # 6) Integrate state based on computed acceleration
+    # TODO: check if we need q or q_next here
+    a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, T / params.m])) + jnp.array([0.0, 0.0, -params.g])
+    vel_next = vel + a_thrust_world * dt
+    pos_next = pos + vel_next * dt
+
+    # 7) Update state fields
+    x_next = jnp.concatenate([
+        pos_next,
+        vel_next,
+        a_thrust_world,
+        q_next,
+        body_rates,
+        u_delayed,
+        battery, # TODO optionally model battery discharge
+    ], axis=None) # flatten and then concatenate
+
+
+    return x_next
 
 
 if __name__ == "__main__":
@@ -134,5 +174,5 @@ if __name__ == "__main__":
         dtype=jnp.float32,
     )
     u0 = jnp.array([0.0, 0.0, 0.0, -1.0], dtype=jnp.float32)
-    x1 = step(x0, u0, 0.01, DEFAULT_PARAMS)  # will raise until implemented
+    x1 = step(x0, u0, 0.01, DEFAULT_PARAMS)
     print(x1)
