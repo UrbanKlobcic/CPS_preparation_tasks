@@ -2,7 +2,6 @@
 from __future__ import annotations
 import jax
 import jax.numpy as jnp
-from jax import jacfwd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import NamedTuple
@@ -11,6 +10,7 @@ from model import step as model_step, thrust_polynomial, ModelParameters, DEFAUL
 
 
 AXIS_NAMES = ['roll', 'pitch', 'yaw', 'thrust']
+
 
 class ExcitationLog(NamedTuple):
     u: jnp.Array  # shape (T, 4)
@@ -28,6 +28,7 @@ def excite_model(
     dt: float = 0.01,
     params: ModelParameters = DEFAULT_PARAMS,
     initial_state: jax.Array = acro_step_runtime.DEFAULT_STATE,
+    reset_velocity: bool = True,
 ) -> jnp.Array:
     """
     Excite the model with given commands, log predicted body rates, world frame acceleration, and battery voltage.
@@ -52,6 +53,9 @@ def excite_model(
 
     def step(carry, t):
         x = carry
+        # HACK reset velocity to zero for both models to avoid drag
+        if reset_velocity:
+            x = x.at[3:6].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
         u_t = u[t]
 
         # Predict with model
@@ -74,6 +78,18 @@ def excite_model(
     )
     # print("Final state after excitation:", x_final)
     return result
+
+
+def generate_dirac_function(time, freq, amplitude):
+    return amplitude * (jnp.abs(time - 0.5) < (dt / 2)).astype(jnp.float32)
+
+
+def generate_constant_function(time, freq, amplitude):
+    return amplitude * jnp.ones_like(time)
+
+
+def generate_sine_function(time, freq, amplitude):
+    return amplitude * jnp.sin(2 * jnp.pi * freq * time)
 
 
 def generate_learning_function(time, freq, amplitude):
@@ -137,7 +153,7 @@ def generate_commands(
     return commands
 
 
-def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100, 
+def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
             dt: float = 0.01, params: ModelParameters = DEFAULT_PARAMS) -> float:
     """
     Linear regression to fit tau for one axis by minimizing MSE between measured and predicted body rates.
@@ -179,21 +195,10 @@ def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
 
     return float(tau_final)
 
-def thrust_agent(az:jnp.Array, m: float, g: float) -> jnp.Array:
-    """
-    Simple agent to compute thrust command from desired vertical acceleration.
 
-    Args:
-        az: desired vertical acceleration (m/s^2)
-        m: mass (kg)
-        g: gravity (m/s^2)
-    Returns:
-        Thrust command (N)
-    """
-    T = m * (az + g)
-    return T
 
-def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float=0.001, steps: int=500, dt: float=0.01) -> jnp.Array:
+
+def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, steps: int = 500, dt: float = 0.01) -> jnp.Array:
     """
     Fit thrust coefficients using nonlinear least squares.
 
@@ -203,6 +208,10 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float=0.001, ste
     Returns:
         Fitted thrust coefficients as jnp.Array of shape (6,)
     """
+    def thrust_agent(az: jnp.Array, m: float, g: float) -> jnp.Array:
+        T = m * (az + g)
+        return T
+    
     def residuals_fn(coeffs: jnp.Array, log: ExcitationLog) -> jnp.Array:
         def forward(x, u_t):
             x_pred = model_step(x, u_t, dt, params._replace(thrust_coeffs=coeffs))
@@ -213,13 +222,10 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float=0.001, ste
             acro_step_runtime.DEFAULT_STATE,
             log.u
         )
-        
-        # use vmap to compute scalar thrust predictions for all time steps "at once"
-        # T_pred = jax.vmap(thrust_polynomial, in_axes=(0, 0, None))(log.u[:, 3], log.b, coeffs)
 
         # Estimate thrust from observations as given in the assignment
-        T_pred = thrust_agent(pred[:, 8], params.m, params.g) # params.m * (pred[:, 8] + params.g)
-        T_meas = thrust_agent(log.a[:, 2], params.m, params.g)  # params.m * (log.a[:, 2] + params.g)
+        T_pred = thrust_agent(pred[:, 8], params.m, params.g)
+        T_meas = thrust_agent(log.a[:, 2], params.m, params.g)
         # jax.debug.print("T_meas: {T_meas_}, T_pred: {T_pred_}", T_meas_=T_meas[0:5], T_pred_=T_pred[0:5])
         # jax.debug.print("shape T_meas: {shape_meas_}, shape T_pred: {shape_pred_}", shape_meas_=T_meas.shape, shape_pred_=T_pred.shape)
         # jax.debug.print("shape log.a[:, 2]: {shape_meas_}, shape pred[:, 8]: {shape_pred_}", shape_meas_=log.a[:, 2].shape, shape_pred_=pred[:, 8].shape)
@@ -243,14 +249,14 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float=0.001, ste
         # # usual version
         # grad = grad_fn(coeffs, log)
         # coeffs = coeffs - lr * grad
-        
+
         # nonlinear least squares version
         r = residuals_fn(coeffs, log)  # shape (T,)
         J = jacobian_fn(coeffs, log)  # shape (T, 6)
         # Levenberg-Marquardt damping
         lambda_damping = 1e-3
         JT = J.transpose()
-        JTJ = JT @ J + lambda_damping * jnp.eye(JT.shape[0]) # shape (6, 6)
+        JTJ = JT @ J + lambda_damping * jnp.eye(JT.shape[0])  # shape (6, 6)
         JTr = JT @ r  # shape (6,)
         update = jnp.linalg.solve(JTJ, JTr)
         coeffs = coeffs - lr * update
@@ -259,6 +265,7 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float=0.001, ste
     coeffs, _ = jax.lax.scan(update_fn, coeffs, jnp.arange(steps))
 
     return coeffs
+
 
 def display_body_rates(log: ExcitationLog, axis: int, prediction: ExcitationLog | None = None, additional: jnp.Array = None, dt: float = 0.01):
     time = jnp.arange(log.u.shape[0]) * dt
@@ -311,6 +318,102 @@ def print_mse(axis, blackbox_obs_test, model_obs_test):
     mse_q = jnp.mean(jnp.square(blackbox_obs_test[:, 9:13] - model_obs_test[:, 9:13]))
     print(f"Axis {AXIS_NAMES[axis]} MSE quaternion: {mse_q:.6f}")
 
+
+def plot_aux_3d(*args, dt: float = 0.01, title: str = "Commands"):
+    """
+    Plot additional data over time.
+
+    Args:
+        data: array of shape (T, N) with auxiliary data
+        title: title for the plot
+    """
+    time = jnp.arange(args[0].shape[0]) * dt
+
+    ax = plt.subplot(224)
+    print(f"auxiliary data shape: {len(args)}{args[0].shape}")
+    for i, data in enumerate(args):
+        ax.plot(time, data, label=f'Auxiliary Data {i}')
+
+    # Labels and title
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Command Value')
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True)
+
+
+def plot_commands_3d(commands: jnp.Array, dt: float = 0.01, title: str = "Commands"):
+    """
+    Plot the 3D commands over time.
+
+    Args:
+        commands: array of shape (T, 4) with commands [roll, pitch, yaw, thrust]
+        title: title for the plot
+    """
+    time = jnp.arange(commands.shape[0]) * dt
+
+    print(f"commands shape: {commands.shape}")
+    ax = plt.subplot(223)
+    ax.plot(time, commands[:, 0], 'm-', label='Roll Command')
+    ax.plot(time, commands[:, 1], 'g-', label='Pitch Command')
+    ax.plot(time, commands[:, 2], 'b-', label='Yaw Command')
+    ax.plot(time, commands[:, 3], 'r-', label='Thrust Command')
+
+    # Labels and title
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Command Value')
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True)
+
+
+def plot_trajectory_3d(commands: jnp.Array, model: bool = False,
+                       params: ModelParameters = DEFAULT_PARAMS,
+                       initial_state: jax.Array = acro_step_runtime.DEFAULT_STATE,
+                       dt: float = 0.01, title: str = "Drone Trajectory"):
+    """
+    Execute a command sequence and display the resulting 3D position trajectory.
+
+    Args:
+        commands: array of shape (T, 4) with commands [roll, pitch, yaw, thrust]
+        model: if True, use the learned model; if False, use the blackbox
+        params: model parameters
+        initial_state: initial state vector
+        dt: time step in seconds
+        title: title for the plot
+    Returns:
+        result: array of shape (T, 21) with state vectors over time
+    """
+    # Execute the command sequence
+    result = excite_model(u=commands, model=model, dt=dt, params=params, initial_state=initial_state, reset_velocity=False)
+
+    # Extract positions from result (first 3 elements of state vector)
+    positions = result[:, 0:3]
+
+    # Create 3D plot
+    sub = 222 if model else 221
+    ax = plt.subplot(sub, projection='3d')
+
+    # Plot trajectory
+    ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], 'b-', linewidth=2, label='Trajectory')
+
+    # Mark start and end points
+    ax.scatter([positions[0, 0]], [positions[0, 1]], [positions[0, 2]],
+               color='green', s=100, marker='o', label='Start', zorder=5)
+    ax.scatter([positions[-1, 0]], [positions[-1, 1]], [positions[-1, 2]],
+               color='red', s=100, marker='s', label='End', zorder=5)
+
+    # Labels and title
+    ax.set_xlabel('X Position (m)')
+    ax.set_ylabel('Y Position (m)')
+    ax.set_zlabel('Z Position (m)')
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True)
+
+    return result
+
+
 if __name__ == "__main__":
     print("Exciting model and fitting parameters...")
     params = DEFAULT_PARAMS
@@ -321,71 +424,94 @@ if __name__ == "__main__":
     a = 1.0
     dt = 0.01
 
-    print("Fitting taus on learning signal...")
-    fig_tau = plt.figure(1)
-    for axis in range(3):  # roll, pitch, yaw (fix thrust to -1)
-        print(f"\n--- Axis {AXIS_NAMES[axis]} ---")
-        commands_test = generate_commands(dt=dt, duration=d, axis=axis, freq=f, amplitude=a)
-        blackbox_obs = excite_model(u=commands_test, model=False)
-        print(f"{blackbox_obs.shape=}")
+    do_tau = True
+    do_thrust = True
+    do_trajectory = True
 
-        learned_tau = fit_tau(ExcitationLog(u=commands_test, w=blackbox_obs[:, 13:16], v=None, a=None, p=None, q=None, b=None),
-                              axis, lr=0.001, steps=50)
-        learned_taus.append(learned_tau)
-        print(f"Learned tau[{AXIS_NAMES[axis]}]: {learned_tau:.6f}")
+    if do_tau:
+        print("Fitting taus on learning signal...")
+        fig_tau = plt.figure(1)
+        for axis in range(3):  # roll, pitch, yaw (fix thrust to -1)
+            print(f"\n--- Axis {AXIS_NAMES[axis]} ---")
+            commands_test = generate_commands(dt=dt, duration=d, axis=axis, freq=f, amplitude=a)
+            blackbox_obs = excite_model(u=commands_test, model=False)
+            print(f"{blackbox_obs.shape=}")
 
-    print("\nValidating learned taus on test signal...")
-    params = ModelParameters(
-        tau=jnp.array([learned_taus[0], learned_taus[1], learned_taus[2], 0.01], dtype=jnp.float32),
-        thrust_coeffs=DEFAULT_PARAMS.thrust_coeffs,
-        max_rate=DEFAULT_PARAMS.max_rate,
-        m=DEFAULT_PARAMS.m,
-        g=DEFAULT_PARAMS.g,
-    )
-    for axis in range(3):
+            learned_tau = fit_tau(ExcitationLog(u=commands_test, w=blackbox_obs[:, 13:16], v=None, a=None, p=None, q=None, b=None),
+                                axis, lr=0.001, steps=50)
+            learned_taus.append(learned_tau)
+            print(f"Learned tau[{AXIS_NAMES[axis]}]: {learned_tau:.6f}")
 
-        commands_test = generate_commands(dt=dt, duration=d, axis=axis, freq=f*2, amplitude=a/2, func=generate_test_function)
-        blackbox_obs_test = excite_model(u=commands_test, model=False)
-        model_obs_test = excite_model(u=commands_test, model=True, params=params)
-
-        # Log MSE after fitting
-        print_mse(axis, blackbox_obs_test, model_obs_test)
-        display_body_rates(
-            ExcitationLog(u=commands_test, w=blackbox_obs_test[:, 13:16], v=None, a=None, p=None, q=None, b=None),
-            axis,
-            prediction=model_obs_test[:, 13:16],
+        print("\nValidating learned taus on test signal...")
+        params = ModelParameters(
+            tau=jnp.array([learned_taus[0], learned_taus[1], learned_taus[2], 0.01], dtype=jnp.float32),
+            thrust_coeffs=DEFAULT_PARAMS.thrust_coeffs,
+            max_rate=DEFAULT_PARAMS.max_rate,
+            m=DEFAULT_PARAMS.m,
+            g=DEFAULT_PARAMS.g,
         )
+        for axis in range(3):
 
-    fig_tau.show()
-    print(f"\nLearned tau values: {learned_taus}")
+            commands_test = generate_commands(dt=dt, duration=d, axis=axis, freq=f*2, amplitude=a/2, func=generate_test_function)
+            blackbox_obs_test = excite_model(u=commands_test, model=False)
+            model_obs_test = excite_model(u=commands_test, model=True, params=params)
 
-    print("Fitting thrust coefficients...")
-    fig_thrust = plt.figure(2)
+            # Log MSE after fitting
+            print_mse(axis, blackbox_obs_test, model_obs_test)
+            display_body_rates(
+                ExcitationLog(u=commands_test, w=blackbox_obs_test[:, 13:16], v=None, a=None, p=None, q=None, b=None),
+                axis,
+                prediction=model_obs_test[:, 13:16],
+            )
 
-    commands_learn = generate_commands(dt=dt, duration=60, axis=3, freq=f, amplitude=a)
-    blackbox_obs = excite_model(u=commands_learn, model=False)
-    learn_log = ExcitationLog(u=commands_learn, a=blackbox_obs[:, 6:9], v=None, w=blackbox_obs[:, 13:16], p=None, q=None, b=blackbox_obs[:, 20])
-    fitted_coeffs = fit_thrust(learn_log, params, steps=100)
-    print(f"Fitted thrust coefficients: {fitted_coeffs.tolist()}")
-    params = params._replace(thrust_coeffs=fitted_coeffs)
+        fig_tau.show()
+        print(f"\nLearned tau values: {learned_taus}")
 
-    guess_tau_thrust = 0.025
-    params = params._replace(tau=jnp.array([params.tau[0], params.tau[1], params.tau[2], guess_tau_thrust], dtype=jnp.float32))
+    if do_thrust:
+        print("Fitting thrust coefficients...")
+        fig_thrust = plt.figure(2)
 
-    print("\nValidating fitted thrust coefficients on test signal...")
-    for volt in range(24, 21, -1):
-        print(f"\n--- Battery Voltage: {volt}V ---")
-        commands_test = generate_commands(dt=dt, duration=60, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
-        x_initial = acro_step_runtime.DEFAULT_STATE.at[20].set(float(volt))
-        blackbox_obs_test = excite_model(u=commands_test, model=False, initial_state=x_initial)
-        model_obs_test = excite_model(u=commands_test, model=True, params=params, initial_state=x_initial)
+        commands_learn = generate_commands(dt=dt, duration=60, axis=3, freq=f, amplitude=a)
+        blackbox_obs = excite_model(u=commands_learn, model=False)
+        learn_log = ExcitationLog(u=commands_learn, a=blackbox_obs[:, 6:9], v=None, w=blackbox_obs[:, 13:16], p=None, q=None, b=blackbox_obs[:, 20])
+        fitted_coeffs = fit_thrust(learn_log, params, steps=100)
+        print(f"Fitted thrust coefficients: {fitted_coeffs.tolist()}")
+        params = params._replace(thrust_coeffs=fitted_coeffs)
 
-        print_mse(axis, blackbox_obs_test, model_obs_test)
-        display_thrust(
-            ExcitationLog(u=commands_test, a=blackbox_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=None),
-            volt,
-            prediction=ExcitationLog(u=commands_test, a=model_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=model_obs_test[:, 20]),
-        )
+        guess_tau_thrust = 0.025
+        params = params._replace(tau=jnp.array([params.tau[0], params.tau[1], params.tau[2], guess_tau_thrust], dtype=jnp.float32))
 
-    fig_thrust.show()
+        print("\nValidating fitted thrust coefficients on test signal...")
+        for volt in range(24, 21, -1):
+            print(f"\n--- Battery Voltage: {volt}V ---")
+            commands_test = generate_commands(dt=dt, duration=60, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
+            x_initial = acro_step_runtime.DEFAULT_STATE.at[20].set(float(volt))
+            blackbox_obs_test = excite_model(u=commands_test, model=False, initial_state=x_initial)
+            model_obs_test = excite_model(u=commands_test, model=True, params=params, initial_state=x_initial)
+
+            print_mse(3, blackbox_obs_test, model_obs_test)
+            display_thrust(
+                ExcitationLog(u=commands_test, a=blackbox_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=None),
+                volt,
+                prediction=ExcitationLog(u=commands_test, a=model_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=model_obs_test[:, 20]),
+            )
+
+        fig_thrust.show()
+
+    if do_trajectory:
+        print("\nPlotting trajectory...")
+        x_initial = acro_step_runtime.DEFAULT_STATE.at[0:3].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
+        # plot demo trajectory
+        fig_trajectory = plt.figure(3)
+
+        commands = generate_commands(dt=0.01, duration=5, axis=3, freq=1.0, amplitude=1.0,
+                                     func=generate_sine_function
+                                    #  func=generate_constant_function
+                                    # func=generate_dirac_function
+                                    )
+        x_black = plot_trajectory_3d(commands, model=False, title="Blackbox Trajectory", params=params, initial_state=x_initial)
+        x_model = plot_trajectory_3d(commands, model=True, title="Model Trajectory", params=params, initial_state=x_initial)
+        plot_commands_3d(commands, title="Commands")
+        plot_aux_3d(x_black[:, 0], x_black[:, 1], x_black[:, 2], x_model[:, 0], x_model[:, 1], x_model[:, 2], title="Auxiliary Data")
+
     plt.show()

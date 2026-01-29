@@ -53,18 +53,18 @@ class ModelParameters(NamedTuple):
 
 
 DEFAULT_PARAMS = ModelParameters(
-    tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029929455369710922, 0.025], dtype=jnp.float32),  # TODO: replace with fitted values
+    tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029996614903211594, 0.025], dtype=jnp.float32),  # TODO: replace with fitted values
     # tau=jnp.array([0.1, 0.5, 0.9, 0.01], dtype=jnp.float32),  # try
     # tau=jnp.array([0.03020575, 0.03020575, 0.01274104, 0.01], dtype=jnp.float32),  # try
     # tau=jnp.array([0.01, 0.01, 0.01, 0.01], dtype=jnp.float32),  # original values
     thrust_coeffs=jnp.array([
-        1.,
-        1., 
-        1., 
-        1.,
-        1.,
-        1.,
-        ], dtype=jnp.float32),  # guess
+        0.4266919195652008,
+        1.4847038984298706,
+        1.0590670108795166,
+        -0.14423194527626038,
+        1.024674415588379,
+        1.0255588293075562
+    ], dtype=jnp.float32),  # fitted values
     # thrust_coeffs=jnp.ones((6,), dtype=jnp.float32),  # TODO: replace with fitted values
 
     max_rate=jnp.array([618.0, 618.0, 120.0], dtype=jnp.float32),
@@ -100,8 +100,9 @@ def map_rates(u_delayed: jax.Array, max_rate: jax.Array) -> jax.Array:
     """
     Map delayed commands to body rates.
     """
-    w_cmd = u_delayed[0:3] * max_rate * (jnp.pi / 180.0)  # rad/s
+    w_cmd = jnp.deg2rad(u_delayed[0:3] * max_rate)
     return w_cmd
+
 
 @jax.jit
 def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.Array:
@@ -152,12 +153,13 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
 
     # 6) Integrate state based on computed acceleration
     # TODO: check if we need q or q_next here
-    a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, (T / params.m) - params.g]))
+    a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, (T / params.m)])) - jnp.array([0.0, 0.0, params.g])
     vel_next = vel + a_thrust_world * dt
-    pos_next = pos + vel_next * dt
+    pos_next = pos + vel_next * dt + 0.5 * a_thrust_world * dt ** 2
 
     # X) battery discharge 1V per minute
     battery = battery - (dt / 60.0)  # optional
+
     # 7) Update state fields
     x_next = jnp.concatenate([
         pos_next,
@@ -166,9 +168,8 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
         q_next,
         body_rates,
         u_delayed,
-        battery, # TODO optionally model battery discharge
-    ], axis=None) # flatten and then concatenate
-
+        battery,
+    ], axis=None)  # flatten and then concatenate
 
     return x_next
 
