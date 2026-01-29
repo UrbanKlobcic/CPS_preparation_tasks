@@ -32,48 +32,14 @@ import jax
 import jax.numpy as jnp
 from utils import *
 from gymnax.environments import spaces
+import model
 
 # ---------------------------------------------------------------------
 # TODO: Use Task 1 model here
 # Dynamics & constants
 # ---------------------------------------------------------------------
 def dynamics_step(x: jax.Array, u: jax.Array, dt: float) -> jax.Array:
-    m = 1.0
-    g = 9.80665
-    max_rates = jnp.array([10.786, 10.786, 2.094]) 
-    
-    alpha = 0.6 
-    u_prev = x[16:20]
-    u_eff = u_prev * (1 - alpha) + u * alpha
-    
-    w_target = u_eff[0:3] * max_rates
-    w_next = w_target 
-
-    q = x[9:13]
-    w_quat = jnp.array([0.0, w_next[0], w_next[1], w_next[2]])
-    dq = 0.5 * quat_mul(q, w_quat)
-    q_next = quat_normalize(q + dq * dt)
-    
-    throttle = (u_eff[3] + 1.0) / 2.0
-    thrust_mag = throttle * 40.0
-    
-    thrust_local = jnp.array([0.0, 0.0, thrust_mag])
-    thrust_world = quat_rotate(q_next, thrust_local)
-    
-    acc = thrust_world / m - jnp.array([0.0, 0.0, g])
-    vel = x[3:6]
-    drag = -0.1 * vel
-    acc = acc + drag
-    
-    vel_next = vel + acc * dt
-    pos_next = x[0:3] + vel * dt + 0.5 * acc * dt**2
-    
-    discharge_rate_per_sec = 1.0 / 60.0 
-    voltage = x[20] - (discharge_rate_per_sec * dt)
-    
-    x_next = jnp.concatenate([
-        pos_next, vel_next, acc, q_next, w_next, u_eff, jnp.array([voltage])
-    ])
+    x_next = model.step(x, u, dt, model.DEFAULT_PARAMS)
     return x_next
 
 
