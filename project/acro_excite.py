@@ -196,8 +196,6 @@ def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
     return float(tau_final)
 
 
-
-
 def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, steps: int = 500, dt: float = 0.01) -> jnp.Array:
     """
     Fit thrust coefficients using nonlinear least squares.
@@ -211,7 +209,7 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, s
     def thrust_agent(az: jnp.Array, m: float, g: float) -> jnp.Array:
         T = m * (az + g)
         return T
-    
+
     def residuals_fn(coeffs: jnp.Array, log: ExcitationLog) -> jnp.Array:
         def forward(x, u_t):
             x_pred = model_step(x, u_t, dt, params._replace(thrust_coeffs=coeffs))
@@ -327,12 +325,12 @@ def plot_aux_3d(*args, dt: float = 0.01, title: str = "Commands"):
         data: array of shape (T, N) with auxiliary data
         title: title for the plot
     """
-    time = jnp.arange(args[0].shape[0]) * dt
+    time = jnp.arange(args[0][0].shape[0]) * dt
 
     ax = plt.subplot(224)
-    print(f"auxiliary data shape: {len(args)}{args[0].shape}")
-    for i, data in enumerate(args):
-        ax.plot(time, data, label=f'Auxiliary Data {i}')
+    print(f"auxiliary data shape: {len(args)}{args[0][0].shape}")
+    for data in args:
+        ax.plot(time, data[0], label=data[1])
 
     # Labels and title
     ax.set_xlabel('Time (s)')
@@ -438,7 +436,7 @@ if __name__ == "__main__":
             print(f"{blackbox_obs.shape=}")
 
             learned_tau = fit_tau(ExcitationLog(u=commands_test, w=blackbox_obs[:, 13:16], v=None, a=None, p=None, q=None, b=None),
-                                axis, lr=0.001, steps=50)
+                                  axis, lr=0.001, steps=50)
             learned_taus.append(learned_tau)
             print(f"Learned tau[{AXIS_NAMES[axis]}]: {learned_tau:.6f}")
 
@@ -506,12 +504,22 @@ if __name__ == "__main__":
 
         commands = generate_commands(dt=0.01, duration=5, axis=3, freq=1.0, amplitude=1.0,
                                      func=generate_sine_function
-                                    #  func=generate_constant_function
-                                    # func=generate_dirac_function
-                                    )
+                                     # func=generate_constant_function
+                                     # func=generate_dirac_function
+                                     )
+        commands = commands.at[:, 0].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.1, amplitude=1))
+        commands = commands.at[:, 1].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.2, amplitude=1))
+        commands = commands.at[:, 2].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.3, amplitude=1))
         x_black = plot_trajectory_3d(commands, model=False, title="Blackbox Trajectory", params=params, initial_state=x_initial)
         x_model = plot_trajectory_3d(commands, model=True, title="Model Trajectory", params=params, initial_state=x_initial)
         plot_commands_3d(commands, title="Commands")
-        plot_aux_3d(x_black[:, 0], x_black[:, 1], x_black[:, 2], x_model[:, 0], x_model[:, 1], x_model[:, 2], title="Auxiliary Data")
+        plot_aux_3d((x_black[:, 0], "Blackbox X"),
+                    (x_black[:, 1], "Blackbox Y"),
+                    (x_black[:, 2], "Blackbox Z"),
+                    (x_model[:, 0], "Model X"),
+                    (x_model[:, 1], "Model Y"),
+                    (x_model[:, 2], "Model Z"),
+                    title="Auxiliary Data"
+                    )
 
     plt.show()
