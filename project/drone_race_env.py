@@ -76,23 +76,23 @@ class EnvParams(NamedTuple):
     initial_gate_id: int = 0
     
     # rewards
-    w_gate: float = 100.0
-    w_progress: float = 2.0
-    w_speed: float = 0.01
-    w_survival: float = -0.05
+    w_gate: float = 10.0
+    w_progress: float = 1.0
+    w_speed: float = 0.001
+    w_survival: float = -0.01
     
     # penalties
-    w_control: float = 0.0001
+    w_control: float = 0.0
     w_altitude: float = 0.01
-    w_missed_gate: float = 0.5
+    w_missed_gate: float = 0.1
     w_crash: float = 100.0
-    w_timeout: float = 0.0
+    w_timeout: float = -10.0
     
     # EXTENSION: noise parameters (std dev)
-    noise_pos: float = 0.05
+    noise_pos: float = 0.1
     noise_vel: float = 0.1
-    noise_ori: float = 0.02
-    noise_rate: float = 0.05
+    noise_ori: float = 0.1
+    noise_rate: float = 0.1
 
 DEFAULT_PARAMS = EnvParams()
 
