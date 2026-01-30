@@ -35,7 +35,7 @@ class ActorCritic(nn.Module):
         )(actor_mean)
         
         # Learnable Log Standard Deviation
-        actor_logtstd = self.param("log_std", constant(-2.0), (self.action_dim,))
+        actor_logtstd = self.param("log_std", constant(-1.0), (self.action_dim,))
         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(actor_logtstd))
 
         # Critic Path

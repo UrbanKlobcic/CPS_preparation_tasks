@@ -72,18 +72,18 @@ class EnvParams(NamedTuple):
     gate_radius: float = 0.75
     max_episode_steps: int = SIM_HZ * 40
     
-    # Evaluation config: -1 for random, >=0 for specific gate
-    initial_gate_id: int = -1
+    # -1 for random, >=0 for specific gate
+    initial_gate_id: int = 0
     
     # rewards
     w_gate: float = 100.0
-    w_progress: float = 0.5
+    w_progress: float = 2.0
     w_speed: float = 0.01
-    w_survival: float = -0.01
+    w_survival: float = -0.05
     
     # penalties
-    w_control: float = 0.001
-    w_altitude: float = 0.001
+    w_control: float = 0.0001
+    w_altitude: float = 0.01
     w_missed_gate: float = 0.5
     w_crash: float = 100.0
     w_timeout: float = 0.0

@@ -264,16 +264,13 @@ def make_train(config, initial_params=None):
 
                 jax.debug.callback(debug_callback, metric, loss_info, update_i)
 
-            # Periodic Checkpoint Callback
             if config.get("CHECKPOINT_FREQ") is not None:
                 def save_callback(state, update_iter):
-                    # Save a periodic checkpoint with step number
                     step_num = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
                     temp_config = config.copy()
                     temp_config["RUN_NAME"] = f"{config['RUN_NAME']}_step{step_num}"
                     checkpoints.save_checkpoint(state, temp_config)
 
-                # Execute callback only on specific steps
                 is_save_step = (update_i > 0) & ((update_i + 1) % config["CHECKPOINT_FREQ"] == 0)
                 jax.lax.cond(
                     is_save_step,
@@ -303,16 +300,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     config = {
-        "LR": 5e-4,
-        "NUM_ENVS": 256,
-        "NUM_STEPS": 256,
-        "TOTAL_TIMESTEPS": 1e8,
-        "UPDATE_EPOCHS": 8,
-        "NUM_MINIBATCHES": 8,
+        "LR": 3e-4,
+        "NUM_ENVS": 32,
+        "NUM_STEPS": 2048,
+        "TOTAL_TIMESTEPS": 1e7,
+        "UPDATE_EPOCHS": 4,
+        "NUM_MINIBATCHES": 4,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
         "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.01,
+        "ENT_COEF": 0.05,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "tanh",
