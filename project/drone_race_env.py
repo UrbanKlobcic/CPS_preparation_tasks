@@ -1,16 +1,15 @@
 """
-DroneRaceEnv (TEMPLATE)
+DroneRaceEnv
 
 This environment has following functions:
 - reset() and step() are pure functions (no side effects)
 - suitable for vectorization (vmap) and JIT compilation
 - designed to be used with a pure-JAX PPO implementation
 
-Implement the TODOs, especially:
+Implemented:
 - reward shaping
 - termination conditions
-- (optional observation noise and action-history features)
-- (optional domain randomization)
+- optional observation noise and action-history features
 
 State/action conventions match the course handout:
 
@@ -28,39 +27,23 @@ Action u (shape (4,)):
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import NamedTuple
-
+from typing import NamedTuple, Optional, Callable
 import jax
 import jax.numpy as jnp
-from utils import *  # import quaternion helpers from utils.py
+from utils import *
 from gymnax.environments import spaces
+import model
 
 
-# ---------------------------------------------------------------------
-# TODO: import your learned dynamics model from Task 1
-# ---------------------------------------------------------------------
-# Your Task-1 model should have signature:
-#   x_next = step(x, u, dt, params)
-#
-# Example (adjust to your project structure):
-# from envs.models.dynamics import step as dynamics_step, DEFAULT_PARAMS, ModelParameters
-#
-def dynamics_step(x: jax.Array, u: jax.Array, dt: float, params) -> jax.Array:
-    raise NotImplementedError(
-        "TODO: import and use your Task-1 learned dynamics step(x,u,dt,params)"
-    )
+def dynamics_step(x: jax.Array, u: jax.Array, dt: float) -> jax.Array:
+    x_next = model.step(x, u, dt, model.DEFAULT_PARAMS)
+    return x_next
 
 
-# Constants: simulation + track
 SIM_HZ = 100
 SIM_DT = 1.0 / SIM_HZ
-
 START_POS = jnp.array([18.6, 2.0, 0.1], dtype=jnp.float32)
 
-# Racing gates: [id, x, y, z, qw, qx, qy, qz]
-# Note: z is 1.35 for all gates as this is the middle of the gate (e.g. 2.7 / 2)
 ENVIRONMENT = jnp.array(
     [
         [0, 12.500000, 2.000000, 1.350000, -0.707107, 0.000000, 0.000000, 0.707107],  # yaw = 270.00
@@ -75,14 +58,61 @@ ENVIRONMENT = jnp.array(
     dtype=jnp.float32,
 )
 
+GATE_WIDTH = 2.7
 MIN_POS = jnp.min(ENVIRONMENT[:, 1:4], axis=0)
 MAX_POS = jnp.max(ENVIRONMENT[:, 1:4], axis=0)
 BOUNDS = jnp.stack([MIN_POS - 5.0, MAX_POS + 5.0], axis=0)
+NUM_GATES = ENVIRONMENT.shape[0]
+BATTERY_MIN = 22.0
+BATTERY_MAX = 24.0
 
+class EnvParams(NamedTuple):
+    gate_radius: float = 0.75
+    max_episode_steps: int = SIM_HZ * 10
+    
+    # -1 for random, >=0 for specific gate
+    initial_gate_id: int = -1
+    
+    # rewards
+    w_gate: float = 10.0
+    w_progress: float = 1.0
+    w_speed: float = 0.01
+    w_survival: float = -0.001
+    
+    # penalties
+    w_control: float = 0.0
+    w_altitude: float = 0.01
+    w_missed_gate: float = 2.0
+    w_crash: float = 10.0
+    w_timeout: float = 0.0
+    
+    # EXTENSION: noise parameters (std dev)
+    noise_pos: float = 0.01
+    noise_vel: float = 0.005
+    noise_ori: float = 0.01
+    noise_rate: float = 0.01
 
-# Gate-frame utilities
+DEFAULT_PARAMS = EnvParams()
+
+def compute_gate_forward(gate_index: jax.Array) -> jax.Array:
+    """
+    Computes the gate "forward" direction, i.e. the normal closest to the direction of the next gate.
+    """
+    gate_index = gate_index.astype(jnp.int32)
+    curr_pos, curr_quat = get_gate_pose(gate_index)
+    
+    next_idx = (gate_index + 1) % NUM_GATES
+    next_pos, _ = get_gate_pose(next_idx)
+    
+    next_gate_dir = next_pos - curr_pos
+    
+    normal = quat_rotate(curr_quat, jnp.array([0.0, -1.0, 0.0], dtype=jnp.float32))
+    
+    # rotate if opposite to next_gate_dir
+    dot_prod = jnp.dot(next_gate_dir, normal)
+    return normal * jnp.sign(dot_prod + 1e-6)
+
 def get_gate_pose(gate_index: jax.Array) -> tuple[jax.Array, jax.Array]:
-    """Return (gate_pos, gate_quat) for the given index."""
     idx = gate_index.astype(jnp.int32)
     gate_row = ENVIRONMENT[idx]
     pos = gate_row[1:4]
@@ -90,74 +120,61 @@ def get_gate_pose(gate_index: jax.Array) -> tuple[jax.Array, jax.Array]:
     quat = quat / (jnp.linalg.norm(quat) + 1e-8)
     return pos, quat
 
-
-def world_to_gate_position(
-        pos_world: jax.Array, gate_pos: jax.Array, gate_quat: jax.Array
-) -> jax.Array:
-    """Transform a world-frame position into the gate frame (gate at origin)."""
+def world_to_gate_position(pos_world, gate_pos, gate_quat):
     q_inv = quat_conjugate(gate_quat)
     return quat_rotate(q_inv, pos_world - gate_pos)
 
-
-def world_to_gate_vector(vec_world: jax.Array, gate_quat: jax.Array) -> jax.Array:
-    """Transform a world-frame vector into the gate frame."""
+def world_to_gate_vector(vec_world, gate_quat):
     q_inv = quat_conjugate(gate_quat)
     return quat_rotate(q_inv, vec_world)
 
-
-# Env state container
 class EnvState(NamedTuple):
     x: jax.Array
     gate_index: jax.Array
     step_count: jax.Array
+    prev_dist_to_gate: jax.Array
+    gates_passed: jax.Array
+    # EXTENSION: action history buffer (last 3 steps)
+    action_history: jax.Array 
 
-
-@dataclass(frozen=True)
 class DroneRaceEnv:
     """
-    Minimal racing environment skeleton.
+    Drone racing environment.
 
-    Required for the exercise:
+    Implemented:
       - observation in *current gate frame*
       - observation includes *relative position of the next gate*
       - reward encourages progressing through gates
       - termination on time limit and safety bounds
-
-    Suggestions (optional):
-      - include previous actions (x[16:20]) and/or action history buffer
-      - add observation noise
-      - add domain randomization sampled per episode
+      - action history buffer
+      - observation noise
     """
+    obs_size: int = 31
+    action_size: int = 4
 
-    gate_radius: float = 0.4
-    gate_bonus: float = 50.0
-    max_episode_steps: int = SIM_HZ * 12
+    def __init__(self, dynamics_fn: Optional[Callable] = None):
+        """
+        Args:
+            dynamics_fn: Function (x, u) -> x_next. 
+                         Defaults to internal `dynamics_step`.
+        """
+        self.dynamics_fn = dynamics_fn if dynamics_fn is not None else dynamics_step
 
-    # Reward weights (examples for reward shaping)
-    w_progress: float = 1.0
-    w_control: float = 0.01
-    w_altitude: float = 0.02
-    w_speed: float = 0.01
-
-    # Observation layout target for the baseline implementation:
-    #   pos_gate(3) + vel_gate(3) + euler_rel(3) + body_rates(3) + u_prev(4) + battery(1) + next_gate_rel(3) = 20
-    obs_size: int = 20
+    @property
+    def default_params(self) -> EnvParams:
+        return DEFAULT_PARAMS
 
     def action_space(self, params=None):
         return spaces.Box(low=-1.0, high=1.0, shape=(4,))
 
     def observation_space(self, params=None):
-        return spaces.Box(
-            low=-jnp.inf * jnp.ones((self.obs_size,), dtype=jnp.float32),
-            high=jnp.inf * jnp.ones((self.obs_size,), dtype=jnp.float32),
-            shape=(self.obs_size,),
-        )
+        return spaces.Box(low=-1.0, high=1.0, shape=(self.obs_size,))
 
     def reset(self, rng: jax.Array, params) -> tuple[jax.Array, EnvState]:
         """
         Reset environment and return (obs, state).
-
-        TODO:
+        
+        Implemented:
           1) Create an initial drone state x0, shape (21,):
              - position: START_POS
              - orientation: face gate 0 (use yaw_to_quat and a look-at direction)
@@ -165,19 +182,71 @@ class DroneRaceEnv:
              - optionally set velocity to 0 and previous action to 0
           2) Set gate_index = 0, step_count = 0
           3) Compute observation in current gate frame via _obs_from_state()
-
-        Optional (recommended):
+        
+        Implemented (Optional):
           - randomize initial positions/orientation slightly (robustness)
           - do not always start at gate 0 but slightly after a random gate (strongly recommended)
-          - sample domain randomization parameters and store them in EnvState
         """
-        raise NotImplementedError("TODO: implement reset()")
+        rng, key_gate, key_pos, key_yaw, key_obs = jax.random.split(rng, 5)
+        
+        # random initial gate id unless specified
+        rand_gate = jax.random.randint(key_gate, (), 0, NUM_GATES).astype(jnp.int32)
+        target_gate_idx = jax.lax.select(
+            params.initial_gate_id == -1, 
+            rand_gate, 
+            jnp.array(params.initial_gate_id, dtype=jnp.int32)
+        ) 
+        
+        prev_gate_idx = (target_gate_idx - 1) % NUM_GATES
+        prev_gate_pos, _ = get_gate_pose(prev_gate_idx)
+        
+        source_pos = jax.lax.select(
+            target_gate_idx == 0,
+            START_POS,
+            prev_gate_pos
+        )
+        
+        target_pos, _ = get_gate_pose(target_gate_idx)
+        
+        vec = target_pos - source_pos
+        dist = jnp.linalg.norm(vec)
+        direction = vec / (dist + 1e-6)
+        
+        base_pos = source_pos + direction * 2.0
+        
+        pos_noise = jax.random.uniform(key_pos, (3,), minval=-1.0, maxval=1.0)
+        pos_noise = pos_noise * jnp.array([1.0, 1.0, 0.5])
+        
+        init_pos = base_pos + pos_noise
+        init_pos = init_pos.at[2].set(jnp.maximum(init_pos[2], 0.5))
+        
+        ideal_yaw = jnp.arctan2(direction[1], direction[0])
+        yaw_noise = jax.random.uniform(key_yaw, (), minval=-0.5, maxval=0.5)
+        init_quat = yaw_to_quat(ideal_yaw + yaw_noise)
+        
+        x0 = jnp.zeros(21, dtype=jnp.float32)
+        x0 = x0.at[0:3].set(init_pos)
+        x0 = x0.at[9:13].set(init_quat)
+        x0 = x0.at[16:20].set(jnp.array([0.0, 0.0, 0.0, -0.6], dtype=jnp.float32))
+        x0 = x0.at[20].set(BATTERY_MAX)
+        
+        init_dist_to_target = jnp.linalg.norm(init_pos - target_pos)
+        
+        state = EnvState(
+            x=x0,
+            gate_index=target_gate_idx.astype(jnp.float32),
+            step_count=jnp.array(0, dtype=jnp.float32),
+            prev_dist_to_gate=init_dist_to_target,
+            gates_passed=jnp.array(0, dtype=jnp.float32),
+            action_history=jnp.zeros((3, 4), dtype=jnp.float32)
+        )
+        return self._obs_from_state(state, key_obs, params), state
 
-    def step(self, rng: jax.Array, state: EnvState, action: jax.Array, params):
+    def step(self, rng: jax.Array, state: EnvState, action: jax.Array, params: EnvParams):
         """
         Step the environment and return (obs, next_state, reward, done, info).
-
-        TODO:
+        
+        Implemented:
           1) Clip/squash action to [-1, 1]
           2) Apply dynamics:
                x_next = dynamics_step(x, u, SIM_DT, params)
@@ -188,23 +257,111 @@ class DroneRaceEnv:
           4) Reward:
                - progress: decrease in distance-to-current-gate between steps
                - gate bonus when passed_gate
-               - optional regularizers (control smoothness, altitude corridor, speed cap)
+               - regularizers (survival, speed, control smoothness, altitude corridor)
           5) Termination:
                - time limit: step_count >= max_episode_steps
                - safety: out of bounds in x/y/z and/or battery low
-          6) Build next EnvState and next observation
-
-        Hints:
-          - Use jax.lax.select for branchless updates (JIT-friendly).
-          - Keep all returned arrays as jnp.float32 where possible.
+          6) Action history extension:
+               - action history buffer (last 3 actions)
+          7) Build next EnvState and next observation
         """
-        raise NotImplementedError("TODO: implement step()")
+        action = jnp.clip(action, -1.0, 1.0).astype(jnp.float32)
+        x = state.x
+        x_next = self.dynamics_fn(x, action, SIM_DT)
+        
+        pos = x_next[0:3]
+        vel = x_next[3:6]
+        
+        gate_idx = state.gate_index.astype(jnp.int32)
+        gate_pos, _ = get_gate_pose(gate_idx)
+        gate_forward = compute_gate_forward(gate_idx)
+        
+        pos_rel_prev = state.x[0:3] - gate_pos
+        pos_rel = pos - gate_pos
+        
+        forward_dist_prev = jnp.dot(pos_rel_prev, gate_forward)
+        forward_dist = jnp.dot(pos_rel, gate_forward)
+        lateral_dist = jnp.linalg.norm(pos_rel - forward_dist * gate_forward)
+        
+        # Gate Logic
+        crossed_plane = (forward_dist_prev <= 0.0) & (forward_dist > 0.0)
+        within_radius = lateral_dist < params.gate_radius
+        passed_gate = crossed_plane & within_radius
+        missed_gate = crossed_plane & ~within_radius
+        
+        next_gate_idx = jax.lax.select(passed_gate, (gate_idx + 1) % NUM_GATES, gate_idx)
+        dist_to_current = jnp.linalg.norm(pos_rel)
+        next_gate_pos, _ = get_gate_pose(next_gate_idx)
+        dist_to_next = jnp.linalg.norm(pos - next_gate_pos)
+        
+        # Out of Bounds / Timeout
+        out_of_bounds = (
+            (pos[0] < BOUNDS[0, 0]) | (pos[0] > BOUNDS[1, 0]) |
+            (pos[1] < BOUNDS[0, 1]) | (pos[1] > BOUNDS[1, 1]) |
+            (pos[2] < BOUNDS[0, 2]) | (pos[2] > BOUNDS[1, 2])
+        )
+        battery_dead = x_next[20] < BATTERY_MIN
+        time_limit = state.step_count >= params.max_episode_steps - 1
+        done = out_of_bounds | battery_dead | time_limit
+        
+        # Rewards / Penalties
+        progress_term = jax.lax.select(
+            passed_gate,
+            state.prev_dist_to_gate,
+            state.prev_dist_to_gate - dist_to_current 
+        )
+        r_progress = params.w_progress * progress_term
+        r_gate = jax.lax.select(passed_gate, params.w_gate, 0.0)
+        r_survival = jax.lax.select(done, 0.0, params.w_survival)
+        r_speed = params.w_speed * jnp.linalg.norm(vel)
+        
+        p_missed = jax.lax.select(missed_gate, params.w_missed_gate, 0.0)
+        p_crash = jax.lax.select(out_of_bounds & ~time_limit, params.w_crash, 0.0)
+        p_timeout = jax.lax.select(time_limit, params.w_timeout, 0.0)
+        p_control = params.w_control * jnp.linalg.norm(action - state.action_history[0])
+        p_altitude = params.w_altitude * jnp.abs(pos[2] - gate_pos[2])
+        
+        reward = (
+            r_progress +
+            r_gate +
+            r_survival +
+            r_speed -
+            p_missed -
+            p_crash -
+            p_timeout -
+            p_control -
+            p_altitude
+        )
+        
+        dist_tracker = jax.lax.select(passed_gate, dist_to_next, dist_to_current)
+        
+        # EXTENSION: update action history
+        new_history = jnp.concatenate([action[None, :], state.action_history[:-1]], axis=0)
+        
+        next_state = EnvState(
+            x=x_next,
+            gate_index=next_gate_idx.astype(jnp.float32),
+            step_count=state.step_count + 1,
+            prev_dist_to_gate=dist_tracker,
+            gates_passed=state.gates_passed + passed_gate.astype(jnp.float32),
+            action_history=new_history
+        )
+        
+        info = {
+            "gates_passed": next_state.gates_passed,
+            "out_of_bounds": out_of_bounds,
+            "returned_episode": done, 
+            "timestep": state.step_count,
+        }
+        
+        rng, rng_obs = jax.random.split(rng)
+        return self._obs_from_state(next_state, rng_obs, params), next_state, reward, done, info
 
-    def _obs_from_state(self, state: EnvState) -> jax.Array:
+    def _obs_from_state(self, state: EnvState, key: jax.Array, params: EnvParams) -> jax.Array:
         """
         Construct observation from EnvState.
-
-        TODO:
+        
+        Implemented:
           - extract drone world state from x:
               pos_world = x[0:3]
               vel_world = x[3:6]
@@ -222,17 +379,56 @@ class DroneRaceEnv:
               next_gate_pos, _ = get_gate_pose((gate_index + 1) % num_gates)
               next_gate_rel = world_to_gate_vector(next_gate_pos - gate_pos, gate_quat)
           - concatenate into obs vector of shape (obs_size,)
-
-        Optional (recommended):
-          - include additional look-ahead gate(s)
-          - add observation noise (Gaussian) in reset/step
+          - EXTENSION: normalize larger values
+          - EXTENSION: add gaussian noise to pos/vel/euler_rel/rates
+          - EXTENSION: add next gate forward vector
         """
-        raise NotImplementedError("TODO: implement _obs_from_state()")
+        x = state.x
+        gate_idx = state.gate_index.astype(jnp.int32)
+        gate_pos, gate_quat = get_gate_pose(gate_idx)
+        
+        pos_gate = world_to_gate_position(x[0:3], gate_pos, gate_quat)
+        vel_gate = world_to_gate_vector(x[3:6], gate_quat)
+        
+        k1, k2, k3, k4 = jax.random.split(key, 4)
+        
+        # Noise magnitude from params
+        pos_gate = pos_gate + jax.random.normal(k1, shape=pos_gate.shape) * params.noise_pos
+        vel_gate = vel_gate + jax.random.normal(k2, shape=vel_gate.shape) * params.noise_vel
+        
+        # normalize large values
+        pos_feat = pos_gate / 10.0
+        vel_feat = vel_gate / 10.0
+        
+        q_rel = quat_mul(quat_conjugate(gate_quat), x[9:13])
+        euler_rel = quat_to_euler(q_rel)
+        # orientation noise
+        euler_rel = euler_rel + jax.random.normal(k3, shape=euler_rel.shape) * params.noise_ori
+        
+        rates = x[13:16]
+        # rates noise
+        rates = rates + jax.random.normal(k4, shape=rates.shape) * params.noise_rate
+        rates_feat = rates
+        
+        next_gate_idx = (gate_idx + 1) % NUM_GATES
+        next_gate_pos, _ = get_gate_pose(next_gate_idx)
+        next_gate_rel = world_to_gate_position(next_gate_pos, gate_pos, gate_quat) / 10.0
+        
+        next_normal_world = compute_gate_forward(next_gate_idx)
+        next_normal_rel = world_to_gate_vector(next_normal_world, gate_quat)
+        
+        hist_feat = state.action_history.reshape(-1)
+        
+        # 3+3+3+3+12+1+3+3 = 31
+        obs = jnp.concatenate([
+            pos_feat, 
+            vel_feat, 
+            euler_rel, 
+            rates_feat, 
+            hist_feat, 
+            x[20:21], 
+            next_gate_rel,
+            next_normal_rel,
+        ])
+        return obs
 
-
-if __name__ == "__main__":
-    env = DroneRaceEnv()
-    key = jax.random.PRNGKey(0)
-    # This will raise until you implement reset().
-    obs, s = env.reset(key, params=None)
-    print("obs shape:", obs.shape)
