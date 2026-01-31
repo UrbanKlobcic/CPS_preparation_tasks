@@ -17,10 +17,73 @@ import mlflow
 from typing import NamedTuple
 from flax.training.train_state import TrainState
 from wrappers import LogWrapper, FlattenObservationWrapper, VecEnv, AutoResetWrapper
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, NUM_GATES
-import checkpoints
-import eval
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS
+from checkpoints import load_checkpoint, save_checkpoint
+from eval_and_log import eval_and_log_artifacts
 from network import ActorCritic
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--no-track", action="store_true", help="Disable MLflow logging")
+    args = parser.parse_args()
+
+    config = {
+        "LR": 5e-4,
+        "NUM_ENVS": 32,
+        "NUM_STEPS": 1024,
+        "TOTAL_TIMESTEPS": 1e8,
+        "UPDATE_EPOCHS": 4,
+        "NUM_MINIBATCHES": 4,
+        "GAMMA": 0.99,
+        "GAE_LAMBDA": 0.95,
+        "CLIP_EPS": 0.2,
+        "ENT_COEF": 0.02,
+        "VF_COEF": 0.5,
+        "MAX_GRAD_NORM": 0.5,
+        "ACTIVATION": "tanh",
+        "ANNEAL_LR": True,
+        "RUN_NAME": "ppo_drone_final",
+        "CKPT_DIR": "checkpoints",
+        "DEBUG": True,
+        "CHECKPOINT_FREQ": 5e6,
+    }
+
+    loaded_params = None
+    if args.resume:
+        if os.path.exists(args.resume):
+            loaded_params = load_checkpoint(args.resume)
+            print(f"Resuming training with weights from {args.resume}")
+        else:
+            raise FileNotFoundError(f"Checkpoint not found at {args.resume}")
+
+    if not args.no_track:
+        mlflow.set_experiment("ppo_drone")
+        mlflow.start_run(run_name=config["RUN_NAME"])
+        mlflow.log_params(config)
+    else:
+        print("MLflow tracking disabled.")
+
+    try:
+        rng = jax.random.PRNGKey(42)
+        train_jit = jax.jit(make_train(config, initial_params=loaded_params))
+
+        print("Starting training...")
+        out = train_jit(rng)
+        print("Training finished.")
+
+        final_state = out["runner_state"][0]
+        ckpt_path = save_checkpoint(final_state, config)
+
+        if not args.no_track and mlflow.active_run():
+            mlflow.log_artifact(ckpt_path)
+            print(f"Logged checkpoint artifact: {ckpt_path}")
+
+        eval_and_log_artifacts(final_state, config)
+
+    finally:
+        if mlflow.active_run():
+            mlflow.end_run()
 
 class Transition(NamedTuple):
     done: jnp.ndarray
@@ -38,16 +101,14 @@ def make_train(config, initial_params=None):
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    
-    # 1. Init Env
+
     env = DroneRaceEnv()
     env_params = DEFAULT_PARAMS
-    
-    # 2. Wrap (Order: Flatten -> Log -> AutoReset -> VecEnv)
+
     env = FlattenObservationWrapper(env)
     env = LogWrapper(env)
-    env = AutoResetWrapper(env) # Handles resetting logic internally
-    env = VecEnv(env)           # Handles vmap internally
+    env = AutoResetWrapper(env)
+    env = VecEnv(env)
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -61,19 +122,19 @@ def make_train(config, initial_params=None):
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x)
-        
+
         tx = optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
             optax.adam(learning_rate=linear_schedule, eps=1e-5),
         )
-        
+
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
             tx=tx,
         )
 
-        # RESUME LOGIC: Override params if provided
+        # RESUME FROM CHECKPOINT
         if initial_params is not None:
             train_state = train_state.replace(params=initial_params)
 
@@ -84,7 +145,7 @@ def make_train(config, initial_params=None):
 
         # TRAIN LOOP
         def _update_step(runner_state, update_i):
-            
+
             def _env_step(runner_state, unused):
                 train_state, env_state, last_obs, rng = runner_state
 
@@ -97,22 +158,17 @@ def make_train(config, initial_params=None):
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-                
-                # Baseline logic: env.step handles vmap and reset
-                obsv, env_state, reward, done, info = env.step(
-                    rng_step, env_state, action, env_params
-                )
-                
-                transition = Transition(
-                    done, action, value, reward, log_prob, last_obs, info
-                )
+
+                obsv, env_state, reward, done, info = env.step(rng_step, env_state, action, env_params)
+
+                transition = Transition(done, action, value, reward, log_prob, last_obs, info)
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
                 _env_step, runner_state, None, config["NUM_STEPS"]
             )
-            
+
             metric = traj_batch.info
 
             # CALCULATE ADVANTAGE
@@ -221,58 +277,49 @@ def make_train(config, initial_params=None):
             )
             train_state = update_state[0]
             rng = update_state[-1]
-            
+
             loss_info = jax.tree.map(lambda x: x.mean(), loss_info)
 
-            # Debug Callback for Logging
-            if config.get("DEBUG"):
-                def debug_callback(info, loss_info, update_iter):
-                    _, (v_loss, a_loss, ent) = loss_info
-                    mask = info["returned_episode"]
-                    
-                    avg_ret = 0.0
-                    avg_len = 0.0
-                    avg_gates = 0.0
-                    crash_rate = 0.0
-                    gate_freq_str = ""
-                    
-                    if np.any(mask):
-                        avg_ret = float(np.sum(info["returned_episode_returns"] * mask) / np.sum(mask))
-                        avg_len = float(np.sum(info["returned_episode_lengths"] * mask) / np.sum(mask))
-                        avg_gates = float(np.sum(info["gates_passed"] * mask) / np.sum(mask))
-                        crash_rate = float(np.sum(info["out_of_bounds"] * mask) / np.sum(mask))
-                        gate_indices_flat = info["gate_index"].flatten().astype(np.int32)
-                        mask_flat = mask.flatten().astype(bool)
-                        valid_indices = gate_indices_flat[mask_flat]
+            # DEBUG & MLFLOW LOGGING
+            def logging_callback(info, loss_info, update_iter):
+                _, (v_loss, a_loss, ent) = loss_info
+                mask = info["returned_episode"]
 
-                        if len(valid_indices) > 0:
-                            counts = np.bincount(valid_indices, minlength=NUM_GATES)
-                            gate_idx_freq = counts / counts.sum()
-                            gate_freq_str = ' '.join(f'.{int(f*10)}' for f in gate_idx_freq)
+                avg_ret = 0.0
+                avg_len = 0.0
+                avg_gates = 0.0
+                crash_rate = 0.0
 
-                    global_step = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
-                    
-                    print(
-                        f"Step {global_step:<9} | "
-                        f"Ret: {avg_ret:<7.1f} | "
-                        f"Len: {avg_len:<5.0f} | "
-                        f"Gates: {avg_gates:<5.2f} ({gate_freq_str}) | "
-                        f"OOB: {crash_rate:<4.2f} | "
-                        f"ValLoss: {float(v_loss):<7.4f}"
-                    )
+                if np.any(mask):
+                    avg_ret = float(np.sum(info["returned_episode_returns"] * mask) / np.sum(mask))
+                    avg_len = float(np.sum(info["returned_episode_lengths"] * mask) / np.sum(mask))
+                    avg_gates = float(np.sum(info["gates_passed"] * mask) / np.sum(mask))
+                    crash_rate = float(np.sum(info["out_of_bounds"] * mask) / np.sum(mask))
 
-                    if mlflow.active_run():
-                        mlflow.log_metrics({
-                            "mean_return": avg_ret,
-                            "mean_length": avg_len,
-                            "gates_passed": avg_gates,
-                            "crash_rate": crash_rate,
-                            "value_loss": float(v_loss),
-                            "entropy": float(ent),
-                        }, step=int(global_step))
+                global_step = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
 
-                jax.debug.callback(debug_callback, metric, loss_info, update_i)
+                print(
+                    f"Step {global_step:<9} | "
+                    f"Ret: {avg_ret:<7.1f} | "
+                    f"Len: {avg_len:<5.0f} | "
+                    f"Gates: {avg_gates:<5.2f} | "
+                    f"OOB: {crash_rate:<4.2f} | "
+                    f"ValLoss: {float(v_loss):<7.4f}"
+                )
 
+                if mlflow.active_run():
+                    mlflow.log_metrics({
+                        "mean_return": avg_ret,
+                        "mean_length": avg_len,
+                        "gates_passed": avg_gates,
+                        "crash_rate": crash_rate,
+                        "value_loss": float(v_loss),
+                        "entropy": float(ent),
+                    }, step=int(global_step))
+
+            jax.debug.callback(logging_callback, metric, loss_info, update_i)
+
+            # CHECKPOINTING
             if config.get("CHECKPOINT_FREQ") is not None:
                 steps_per_update = config["NUM_STEPS"] * config["NUM_ENVS"]
                 ckpt_interval_updates = max(1, int(config["CHECKPOINT_FREQ"] // steps_per_update))
@@ -282,14 +329,14 @@ def make_train(config, initial_params=None):
                     temp_config = config.copy()
                     temp_config["RUN_NAME"] = f"{config['RUN_NAME']}_step{step_num}"
                     print(f"Saving checkpoint at step {step_num}...")
-                    checkpoints.save_checkpoint(state, temp_config)
+                    save_checkpoint(state, temp_config)
 
                 is_save_step = ((update_i + 1) % ckpt_interval_updates == 0)
 
                 jax.lax.cond(
                     is_save_step,
                     lambda args: jax.debug.callback(save_callback, *args),
-                    lambda args: None,
+                    lambda _: None,
                     (train_state, update_i + 1)
                 )
 
@@ -298,7 +345,7 @@ def make_train(config, initial_params=None):
 
         rng, _rng = jax.random.split(rng)
         runner_state = (train_state, env_state, obsv, _rng)
-        
+
         update_indices = jnp.arange(config["NUM_UPDATES"])
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, update_indices
@@ -308,65 +355,5 @@ def make_train(config, initial_params=None):
     return train
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--no-track", action="store_true", help="Disable MLflow logging")
-    args = parser.parse_args()
-    
-    config = {
-        "LR": 1e-4,
-        "NUM_ENVS": 32,
-        "NUM_STEPS": 2048,
-        "TOTAL_TIMESTEPS": 5e6,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 4,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.1,
-        "ENT_COEF": 0.01,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
-        "ACTIVATION": "tanh",
-        "ANNEAL_LR": True,
-        "RUN_NAME": "ppo_drone_layer_norm_long_run",
-        "CKPT_DIR": "checkpoints",
-        "DEBUG": True,
-        "CHECKPOINT_FREQ": 5e7,
-    }
-    
-    loaded_params = None
-    if args.resume:
-        if os.path.exists(args.resume):
-            loaded_params = checkpoints.load_checkpoint(args.resume)
-            print(f"Resuming training with weights from {args.resume}")
-        else:
-            raise FileNotFoundError(f"Checkpoint not found at {args.resume}")
-    
-    if not args.no_track:
-        mlflow.set_experiment("DroneRacing_PPO")
-        mlflow_run = mlflow.start_run(run_name=config["RUN_NAME"])
-        mlflow.log_params(config)
-    else:
-        print("MLflow tracking disabled.")
-        mlflow_run = None
-    
-    try:
-        rng = jax.random.PRNGKey(42)
-        train_jit = jax.jit(make_train(config, initial_params=loaded_params))
-        
-        print("Starting training...")
-        out = train_jit(rng)
-        print("Training finished.")
-        
-        final_state = out["runner_state"][0]
-        ckpt_path = checkpoints.save_checkpoint(final_state, config)
-        
-        if not args.no_track and mlflow.active_run():
-            mlflow.log_artifact(ckpt_path)
-            print(f"Logged checkpoint artifact: {ckpt_path}")
-        
-        eval.evaluate_and_export(final_state, config)
-    
-    finally:
-        if mlflow.active_run():
-            mlflow.end_run()
+    main()
+

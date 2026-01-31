@@ -34,10 +34,7 @@ from utils import *
 from gymnax.environments import spaces
 import model
 
-# ---------------------------------------------------------------------
-# TODO: Use Task 1 model here
-# Dynamics & constants
-# ---------------------------------------------------------------------
+
 def dynamics_step(x: jax.Array, u: jax.Array, dt: float) -> jax.Array:
     x_next = model.step(x, u, dt, model.DEFAULT_PARAMS)
     return x_next
@@ -61,6 +58,7 @@ ENVIRONMENT = jnp.array(
     dtype=jnp.float32,
 )
 
+GATE_WIDTH = 2.7
 MIN_POS = jnp.min(ENVIRONMENT[:, 1:4], axis=0)
 MAX_POS = jnp.max(ENVIRONMENT[:, 1:4], axis=0)
 BOUNDS = jnp.stack([MIN_POS - 5.0, MAX_POS + 5.0], axis=0)
@@ -70,7 +68,7 @@ BATTERY_MAX = 24.0
 
 class EnvParams(NamedTuple):
     gate_radius: float = 0.75
-    max_episode_steps: int = SIM_HZ * 50
+    max_episode_steps: int = SIM_HZ * 10
     
     # -1 for random, >=0 for specific gate
     initial_gate_id: int = -1
@@ -78,8 +76,8 @@ class EnvParams(NamedTuple):
     # rewards
     w_gate: float = 10.0
     w_progress: float = 1.0
-    w_speed: float = 0.0
-    w_survival: float = 0.0
+    w_speed: float = 0.01
+    w_survival: float = -0.001
     
     # penalties
     w_control: float = 0.0
@@ -96,8 +94,23 @@ class EnvParams(NamedTuple):
 
 DEFAULT_PARAMS = EnvParams()
 
-def compute_gate_forward(gate_quat: jax.Array) -> jax.Array:
-    return quat_rotate(gate_quat, jnp.array([0.0, -1.0, 0.0], dtype=jnp.float32))
+def compute_gate_forward(gate_index: jax.Array) -> jax.Array:
+    """
+    Computes the gate "forward" direction, i.e. the normal closest to the direction of the next gate.
+    """
+    gate_index = gate_index.astype(jnp.int32)
+    curr_pos, curr_quat = get_gate_pose(gate_index)
+    
+    next_idx = (gate_index + 1) % NUM_GATES
+    next_pos, _ = get_gate_pose(next_idx)
+    
+    next_gate_dir = next_pos - curr_pos
+    
+    normal = quat_rotate(curr_quat, jnp.array([0.0, -1.0, 0.0], dtype=jnp.float32))
+    
+    # rotate if opposite to next_gate_dir
+    dot_prod = jnp.dot(next_gate_dir, normal)
+    return normal * jnp.sign(dot_prod + 1e-6)
 
 def get_gate_pose(gate_index: jax.Array) -> tuple[jax.Array, jax.Array]:
     idx = gate_index.astype(jnp.int32)
@@ -136,7 +149,7 @@ class DroneRaceEnv:
       - action history buffer
       - observation noise
     """
-    obs_size: int = 28
+    obs_size: int = 31
     action_size: int = 4
 
     def __init__(self, dynamics_fn: Optional[Callable] = None):
@@ -260,8 +273,8 @@ class DroneRaceEnv:
         vel = x_next[3:6]
         
         gate_idx = state.gate_index.astype(jnp.int32)
-        gate_pos, gate_quat = get_gate_pose(gate_idx)
-        gate_forward = compute_gate_forward(gate_quat)
+        gate_pos, _ = get_gate_pose(gate_idx)
+        gate_forward = compute_gate_forward(gate_idx)
         
         pos_rel_prev = state.x[0:3] - gate_pos
         pos_rel = pos - gate_pos
@@ -335,12 +348,10 @@ class DroneRaceEnv:
         )
         
         info = {
-            "gate_index": state.gate_index,
             "gates_passed": next_state.gates_passed,
             "out_of_bounds": out_of_bounds,
             "returned_episode": done, 
             "timestep": state.step_count,
-            "pos_z": pos[2] 
         }
         
         rng, rng_obs = jax.random.split(rng)
@@ -370,6 +381,7 @@ class DroneRaceEnv:
           - concatenate into obs vector of shape (obs_size,)
           - EXTENSION: normalize larger values
           - EXTENSION: add gaussian noise to pos/vel/euler_rel/rates
+          - EXTENSION: add next gate forward vector
         """
         x = state.x
         gate_idx = state.gate_index.astype(jnp.int32)
@@ -396,15 +408,18 @@ class DroneRaceEnv:
         rates = x[13:16]
         # rates noise
         rates = rates + jax.random.normal(k4, shape=rates.shape) * params.noise_rate
-        rates_feat = rates / 10.0 
+        rates_feat = rates
         
         next_gate_idx = (gate_idx + 1) % NUM_GATES
         next_gate_pos, _ = get_gate_pose(next_gate_idx)
         next_gate_rel = world_to_gate_position(next_gate_pos, gate_pos, gate_quat) / 10.0
         
+        next_normal_world = compute_gate_forward(next_gate_idx)
+        next_normal_rel = world_to_gate_vector(next_normal_world, gate_quat)
+        
         hist_feat = state.action_history.reshape(-1)
         
-        # 3+3+3+3+12+1+3 = 28
+        # 3+3+3+3+12+1+3+3 = 31
         obs = jnp.concatenate([
             pos_feat, 
             vel_feat, 
@@ -412,7 +427,8 @@ class DroneRaceEnv:
             rates_feat, 
             hist_feat, 
             x[20:21], 
-            next_gate_rel
+            next_gate_rel,
+            next_normal_rel,
         ])
         return obs
 

@@ -1,11 +1,10 @@
 import jax
 import jax.numpy as jnp
-import chex
 import numpy as np
 from flax import struct
 from functools import partial
-from typing import Optional, Tuple, Union, Any
-from gymnax.environments import environment, spaces
+from typing import Any
+from gymnax.environments import spaces
 
 class GymnaxWrapper(object):
     def __init__(self, env):
@@ -13,7 +12,7 @@ class GymnaxWrapper(object):
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-# --- 1. Vectorization Wrapper ---
+# --- Custom Vectorization Wrapper ---
 class VecEnv(GymnaxWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -26,7 +25,7 @@ class VecEnv(GymnaxWrapper):
     def action_space(self, params):
         return self._env.action_space(params)
 
-# --- 2. Auto Reset Wrapper ---
+# --- Custom Auto Reset Wrapper ---
 class AutoResetWrapper(GymnaxWrapper):
     """Automatically resets the environment when done=True."""
     def __init__(self, env):
@@ -36,13 +35,9 @@ class AutoResetWrapper(GymnaxWrapper):
     def step(self, key, state, action, params=None):
         obs, next_state, reward, done, info = self._env.step(key, state, action, params)
         
-        # Split RNG for potential reset
         key, reset_key = jax.random.split(key)
-        
-        # Calculate reset state/obs
         reset_obs, reset_state = self._env.reset(reset_key, params)
         
-        # Select between next_state and reset_state based on done
         new_state = jax.tree.map(
             lambda x, y: jnp.where(done, x, y), 
             reset_state, 
@@ -52,12 +47,12 @@ class AutoResetWrapper(GymnaxWrapper):
         done_expanded = done
         if obs.ndim > 0 and done.ndim > 0 and done.shape != obs.shape:
              done_expanded = done[..., None] # Broadcast if needed
-             
+        
         new_obs = jnp.where(done_expanded, reset_obs, obs)
         
         return new_obs, new_state, reward, done, info
 
-# --- 3. Existing Wrappers ---
+# --- Existing Wrappers ---
 class FlattenObservationWrapper(GymnaxWrapper):
     def __init__(self, env):
         super().__init__(env)
