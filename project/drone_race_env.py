@@ -70,29 +70,29 @@ BATTERY_MAX = 24.0
 
 class EnvParams(NamedTuple):
     gate_radius: float = 0.75
-    max_episode_steps: int = SIM_HZ * 40
+    max_episode_steps: int = SIM_HZ * 50
     
     # -1 for random, >=0 for specific gate
-    initial_gate_id: int = 0
+    initial_gate_id: int = -1
     
     # rewards
     w_gate: float = 10.0
     w_progress: float = 1.0
-    w_speed: float = 0.001
-    w_survival: float = -0.01
+    w_speed: float = 0.0
+    w_survival: float = 0.0
     
     # penalties
     w_control: float = 0.0
     w_altitude: float = 0.01
-    w_missed_gate: float = 0.1
-    w_crash: float = 100.0
-    w_timeout: float = -10.0
+    w_missed_gate: float = 2.0
+    w_crash: float = 10.0
+    w_timeout: float = 0.0
     
     # EXTENSION: noise parameters (std dev)
-    noise_pos: float = 0.1
-    noise_vel: float = 0.1
-    noise_ori: float = 0.1
-    noise_rate: float = 0.1
+    noise_pos: float = 0.01
+    noise_vel: float = 0.005
+    noise_ori: float = 0.01
+    noise_rate: float = 0.01
 
 DEFAULT_PARAMS = EnvParams()
 
@@ -335,6 +335,7 @@ class DroneRaceEnv:
         )
         
         info = {
+            "gate_index": state.gate_index,
             "gates_passed": next_state.gates_passed,
             "out_of_bounds": out_of_bounds,
             "returned_episode": done, 

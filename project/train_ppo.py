@@ -17,7 +17,7 @@ import mlflow
 from typing import NamedTuple
 from flax.training.train_state import TrainState
 from wrappers import LogWrapper, FlattenObservationWrapper, VecEnv, AutoResetWrapper
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, NUM_GATES
 import checkpoints
 import eval
 from network import ActorCritic
@@ -234,12 +234,21 @@ def make_train(config, initial_params=None):
                     avg_len = 0.0
                     avg_gates = 0.0
                     crash_rate = 0.0
+                    gate_freq_str = ""
                     
                     if np.any(mask):
                         avg_ret = float(np.sum(info["returned_episode_returns"] * mask) / np.sum(mask))
                         avg_len = float(np.sum(info["returned_episode_lengths"] * mask) / np.sum(mask))
                         avg_gates = float(np.sum(info["gates_passed"] * mask) / np.sum(mask))
                         crash_rate = float(np.sum(info["out_of_bounds"] * mask) / np.sum(mask))
+                        gate_indices_flat = info["gate_index"].flatten().astype(np.int32)
+                        mask_flat = mask.flatten().astype(bool)
+                        valid_indices = gate_indices_flat[mask_flat]
+
+                        if len(valid_indices) > 0:
+                            counts = np.bincount(valid_indices, minlength=NUM_GATES)
+                            gate_idx_freq = counts / counts.sum()
+                            gate_freq_str = ' '.join(f'.{int(f*10)}' for f in gate_idx_freq)
 
                     global_step = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
                     
@@ -247,7 +256,7 @@ def make_train(config, initial_params=None):
                         f"Step {global_step:<9} | "
                         f"Ret: {avg_ret:<7.1f} | "
                         f"Len: {avg_len:<5.0f} | "
-                        f"Gates: {avg_gates:<5.2f} | "
+                        f"Gates: {avg_gates:<5.2f} ({gate_freq_str}) | "
                         f"OOB: {crash_rate:<4.2f} | "
                         f"ValLoss: {float(v_loss):<7.4f}"
                     )
@@ -265,18 +274,23 @@ def make_train(config, initial_params=None):
                 jax.debug.callback(debug_callback, metric, loss_info, update_i)
 
             if config.get("CHECKPOINT_FREQ") is not None:
-                def save_callback(state, update_iter):
-                    step_num = (update_iter + 1) * config["NUM_STEPS"] * config["NUM_ENVS"]
+                steps_per_update = config["NUM_STEPS"] * config["NUM_ENVS"]
+                ckpt_interval_updates = max(1, int(config["CHECKPOINT_FREQ"] // steps_per_update))
+
+                def save_callback(state, update_count):
+                    step_num = int(update_count) * steps_per_update
                     temp_config = config.copy()
                     temp_config["RUN_NAME"] = f"{config['RUN_NAME']}_step{step_num}"
+                    print(f"Saving checkpoint at step {step_num}...")
                     checkpoints.save_checkpoint(state, temp_config)
 
-                is_save_step = (update_i > 0) & ((update_i + 1) % config["CHECKPOINT_FREQ"] == 0)
+                is_save_step = ((update_i + 1) % ckpt_interval_updates == 0)
+
                 jax.lax.cond(
                     is_save_step,
-                    lambda s: jax.debug.callback(save_callback, s, update_i),
-                    lambda s: None,
-                    train_state
+                    lambda args: jax.debug.callback(save_callback, *args),
+                    lambda args: None,
+                    (train_state, update_i + 1)
                 )
 
             runner_state = (train_state, env_state, last_obs, rng)
@@ -300,24 +314,24 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     config = {
-        "LR": 3e-4,
+        "LR": 1e-4,
         "NUM_ENVS": 32,
         "NUM_STEPS": 2048,
-        "TOTAL_TIMESTEPS": 1e7,
+        "TOTAL_TIMESTEPS": 5e6,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.05,
+        "CLIP_EPS": 0.1,
+        "ENT_COEF": 0.01,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "tanh",
         "ANNEAL_LR": True,
-        "RUN_NAME": "ppo_drone",
+        "RUN_NAME": "ppo_drone_layer_norm_long_run",
         "CKPT_DIR": "checkpoints",
         "DEBUG": True,
-        "CHECKPOINT_FREQ": 1e6,
+        "CHECKPOINT_FREQ": 5e7,
     }
     
     loaded_params = None
