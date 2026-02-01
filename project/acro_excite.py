@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import NamedTuple
 import acro_step_runtime
-from model import step as model_step, thrust_polynomial, ModelParameters, DEFAULT_PARAMS
+from model import step as model_step, ModelParameters, DEFAULT_PARAMS
 
 
 AXIS_NAMES = ['roll', 'pitch', 'yaw', 'thrust']
@@ -51,11 +51,20 @@ def excite_model(
     else:
         step_fn = blackbox_step
 
+    def reset_fn(x):
+        return x.at[3:6].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
+
+    def no_reset_fn(x):
+        return x
+
     def step(carry, t):
         x = carry
-        # HACK reset velocity to zero for both models to avoid drag
-        if reset_velocity:
-            x = x.at[3:6].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
+        # reset velocity to zero for both models to avoid influence of drag if we get too fast
+        # if reset_velocity:
+        #     x = x.at[3:6].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
+        condition = reset_velocity & ((x[3] > 20.0) | (x[4] > 20.0) | (x[5] > 20.0))
+        x = jax.lax.cond(condition, reset_fn, no_reset_fn, x)
+
         u_t = u[t]
 
         # Predict with model
@@ -128,7 +137,7 @@ def generate_commands(
     func: callable = generate_learning_function,
 ) -> jnp.Array:
     """
-    Generate a learning command for a given time and axis.
+    Generate a command sequence for a given time and axis.
 
     Args:
         t: time (seconds)
@@ -153,11 +162,27 @@ def generate_commands(
     return commands
 
 
+def thrust_agent(az: jnp.Array, m: float, g: float) -> jnp.Array:
+    T = m * (az + g)
+    return T
+
+
 def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
             dt: float = 0.01, params: ModelParameters = DEFAULT_PARAMS) -> float:
     """
     Linear regression to fit tau for one axis by minimizing MSE between measured and predicted body rates.
     (Reference tutorial: https://coax.readthedocs.io/en/latest/examples/linear_regression/jax.html)
+
+    Args:
+        log: ExcitationLog with commands u and measured body rates w
+        axis: 0=roll, 1=pitch, 2=yaw
+        lr: learning rate
+        steps: number of gradient descent steps
+        dt: time step in seconds
+        params: model parameters
+
+    Returns:
+        Fitted tau value for the given axis as float
     """
 
     def loss_fn(tau_t, log: ExcitationLog) -> jnp.Array:
@@ -187,7 +212,7 @@ def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
     def update_fn(tau_val, _):
         grad = grad_fn(tau_val, log)
         tau_val = tau_val - lr * grad
-        tau_val = jnp.clip(tau_val, 1e-4, 1.0)  # keep 0 < eps <= tau <= 1.0
+        tau_val = jnp.clip(tau_val, 1e-6, 1.0)  # keep 0 < eps <= tau <= 1.0
         return tau_val, None
 
     tau_t = DEFAULT_PARAMS.tau[axis]
@@ -206,9 +231,6 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, s
     Returns:
         Fitted thrust coefficients as jnp.Array of shape (6,)
     """
-    def thrust_agent(az: jnp.Array, m: float, g: float) -> jnp.Array:
-        T = m * (az + g)
-        return T
 
     def residuals_fn(coeffs: jnp.Array, log: ExcitationLog) -> jnp.Array:
         def forward(x, u_t):
@@ -236,7 +258,6 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, s
 
     jacobian_fn = jax.jacfwd(residuals_fn)
 
-    # Initialize coefficients to small random values for numerical stability
     k = 1
     coeffs_init = jnp.array([k, k, k, k, k, k], dtype=jnp.float32)
 
@@ -282,31 +303,31 @@ def display_body_rates(log: ExcitationLog, axis: int, prediction: ExcitationLog 
     plt.grid()
 
 
-def display_thrust(log: ExcitationLog, volt: int, prediction: ExcitationLog | None = None, additional: jnp.Array = None, dt: float = 0.01):
+def display_thrust(log: ExcitationLog, volt: int, prediction: ExcitationLog | None = None, additional: jnp.Array = None, params: ModelParameters = DEFAULT_PARAMS, dt: float = 0.01):
     time = jnp.arange(log.u.shape[0]) * dt
     idx = 24-volt
     plt.subplot(3, 1, idx + 1)
     # plt.plot(time, log.a[:, 0], label='Measured x (blackbox)', color='red')
     # plt.plot(time, log.a[:, 1], label='Measured y (blackbox)', color='orange')
-    plt.plot(time, log.a[:, 2], label='Measured z (blackbox)', color='blue')
+    plt.plot(time, thrust_agent(log.a[:, 2], params.m, params.g), label='Measured thrust (blackbox)', color='blue')
     if log.b is not None:
         plt.plot(time, log.b[:], label='Battery level (blackbox)', color='grey', linestyle=':')
     if prediction is not None and prediction.b is not None:
         plt.plot(time, prediction.b[:], label='Battery level (model)', color='lightgrey', linestyle='-.')
     # plt.plot(time, log.w_predicted[:, axis], label='Predicted (initial guess)', color='orange', linestyle='--')
     if prediction is not None:
-        plt.plot(time, prediction.a[:, 2], label='Predicted', color='red', linestyle=':')
+        plt.plot(time, thrust_agent(prediction.a[:, 2], params.m, params.g), label='Predicted thrust (model)', color='red', linestyle=':')
     if additional is not None:
         plt.plot(time, additional[:, 2], label='Additional', color='purple', linestyle='-.')
     plt.plot(time, log.u[:, -1], label='Commands', color='green', linestyle='--')
     plt.title(f'Thrust at Voltage {volt} - Measured vs Predicted')
     plt.xlabel('Time (s)')
-    plt.ylabel('Thrust (Value)/Acceleration (m/s^2)')
+    plt.ylabel('Thrust (N)')
     plt.legend()
     plt.grid()
 
 
-def print_mse(axis, blackbox_obs_test, model_obs_test):
+def print_mse(axis: int, blackbox_obs_test: jax.Array, model_obs_test: jax.Array, params: ModelParameters):
     mse_p = jnp.mean(jnp.square(blackbox_obs_test[:, 0:3] - model_obs_test[:, 0:3]))
     print(f"Axis {AXIS_NAMES[axis]} MSE position: {mse_p:.6f}")
     mse_v = jnp.mean(jnp.square(blackbox_obs_test[:, 3:6] - model_obs_test[:, 3:6]))
@@ -315,6 +336,10 @@ def print_mse(axis, blackbox_obs_test, model_obs_test):
     print(f"Axis {AXIS_NAMES[axis]} MSE body rates: {mse_w:.6f}")
     mse_q = jnp.mean(jnp.square(blackbox_obs_test[:, 9:13] - model_obs_test[:, 9:13]))
     print(f"Axis {AXIS_NAMES[axis]} MSE quaternion: {mse_q:.6f}")
+    mse_a = jnp.mean(jnp.square(
+        thrust_agent(blackbox_obs_test[:, 6:9], params.m, params.g)
+        - thrust_agent(model_obs_test[:, 6:9], params.m, params.g)))
+    print(f"Axis {AXIS_NAMES[axis]} MSE thrust: {mse_a:.6f}")
 
 
 def plot_aux_3d(*args, dt: float = 0.01, title: str = "Commands"):
@@ -440,9 +465,12 @@ if __name__ == "__main__":
             learned_taus.append(learned_tau)
             print(f"Learned tau[{AXIS_NAMES[axis]}]: {learned_tau:.6f}")
 
+        # set average tau for thrust axis, as this will be dominated by the coeffitients
+        learned_taus.append(float(jnp.mean(jnp.array(learned_taus))))
+
         print("\nValidating learned taus on test signal...")
         params = ModelParameters(
-            tau=jnp.array([learned_taus[0], learned_taus[1], learned_taus[2], 0.01], dtype=jnp.float32),
+            tau=jnp.array(learned_taus, dtype=jnp.float32),
             thrust_coeffs=DEFAULT_PARAMS.thrust_coeffs,
             max_rate=DEFAULT_PARAMS.max_rate,
             m=DEFAULT_PARAMS.m,
@@ -455,7 +483,7 @@ if __name__ == "__main__":
             model_obs_test = excite_model(u=commands_test, model=True, params=params)
 
             # Log MSE after fitting
-            print_mse(axis, blackbox_obs_test, model_obs_test)
+            print_mse(axis, blackbox_obs_test, model_obs_test, params)
             display_body_rates(
                 ExcitationLog(u=commands_test, w=blackbox_obs_test[:, 13:16], v=None, a=None, p=None, q=None, b=None),
                 axis,
@@ -463,7 +491,10 @@ if __name__ == "__main__":
             )
 
         fig_tau.show()
-        print(f"\nLearned tau values: {learned_taus}")
+        print("\n")
+        print("*" * 40)
+        print(f"Learned tau values: {learned_taus}")
+        print("*" * 40)
 
     if do_thrust:
         print("Fitting thrust coefficients...")
@@ -473,21 +504,20 @@ if __name__ == "__main__":
         blackbox_obs = excite_model(u=commands_learn, model=False)
         learn_log = ExcitationLog(u=commands_learn, a=blackbox_obs[:, 6:9], v=None, w=blackbox_obs[:, 13:16], p=None, q=None, b=blackbox_obs[:, 20])
         fitted_coeffs = fit_thrust(learn_log, params, steps=100)
+        print("*" * 40)
         print(f"Fitted thrust coefficients: {fitted_coeffs.tolist()}")
+        print("*" * 40)
         params = params._replace(thrust_coeffs=fitted_coeffs)
-
-        guess_tau_thrust = 0.025
-        params = params._replace(tau=jnp.array([params.tau[0], params.tau[1], params.tau[2], guess_tau_thrust], dtype=jnp.float32))
 
         print("\nValidating fitted thrust coefficients on test signal...")
         for volt in range(24, 21, -1):
             print(f"\n--- Battery Voltage: {volt}V ---")
-            commands_test = generate_commands(dt=dt, duration=60, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
+            commands_test = generate_commands(dt=dt, duration=40, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
             x_initial = acro_step_runtime.DEFAULT_STATE.at[20].set(float(volt))
             blackbox_obs_test = excite_model(u=commands_test, model=False, initial_state=x_initial)
             model_obs_test = excite_model(u=commands_test, model=True, params=params, initial_state=x_initial)
 
-            print_mse(3, blackbox_obs_test, model_obs_test)
+            print_mse(3, blackbox_obs_test, model_obs_test, params)
             display_thrust(
                 ExcitationLog(u=commands_test, a=blackbox_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=None),
                 volt,

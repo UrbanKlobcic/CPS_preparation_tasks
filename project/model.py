@@ -53,19 +53,16 @@ class ModelParameters(NamedTuple):
 
 
 DEFAULT_PARAMS = ModelParameters(
-    tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029996614903211594, 0.025], dtype=jnp.float32),  # TODO: replace with fitted values
-    # tau=jnp.array([0.1, 0.5, 0.9, 0.01], dtype=jnp.float32),  # try
-    # tau=jnp.array([0.03020575, 0.03020575, 0.01274104, 0.01], dtype=jnp.float32),  # try
-    # tau=jnp.array([0.01, 0.01, 0.01, 0.01], dtype=jnp.float32),  # original values
+    tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029999976977705956, 0.021333327516913414], dtype=jnp.float32),
+
     thrust_coeffs=jnp.array([
-        0.4266919195652008,
-        1.4847038984298706,
-        1.0590670108795166,
-        -0.14423194527626038,
-        1.024674415588379,
-        1.0255588293075562
+        -0.3610572814941406,
+        1.2703458070755005,
+        0.9464727640151978,
+        -0.23042286932468414,
+        1.0582232475280762,
+        1.0379574298858643
     ], dtype=jnp.float32),  # fitted values
-    # thrust_coeffs=jnp.ones((6,), dtype=jnp.float32),  # TODO: replace with fitted values
 
     max_rate=jnp.array([618.0, 618.0, 120.0], dtype=jnp.float32),
     m=1.0,
