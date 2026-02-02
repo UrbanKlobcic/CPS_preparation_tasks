@@ -437,6 +437,97 @@ def plot_trajectory_3d(commands: jnp.Array, model: bool = False,
     return result
 
 
+def onestep_prediction_errors(
+    commands: jnp.Array,
+    params: ModelParameters = DEFAULT_PARAMS,
+    initial_state: jax.Array = acro_step_runtime.DEFAULT_STATE,
+    dt: float = 0.01
+) -> dict:
+    """
+    Calculate one-step prediction errors by comparing model predictions to actual observations.
+    
+    For each timestep t, uses state x_t and command u_t to predict x_{t+1}, then compares
+    to the observed x_{t+1}.
+
+    Args:
+        commands: array of shape (T, 4) with commands
+        model: if True, use the learned model; if False, use the blackbox
+        params: model parameters
+        initial_state: initial state vector
+        dt: time step in seconds
+
+    Returns:
+        Dictionary containing:
+        - 'errors': shape (T-1, 21) - full state prediction errors
+        - 'mse_position': float - MSE for position (first 3 states)
+        - 'mse_velocity': float - MSE for velocity (states 3-6)
+        - 'mse_acceleration': float - MSE for acceleration (states 6-9)
+        - 'mse_quaternion': float - MSE for quaternion (states 9-13)
+        - 'mse_body_rates': float - MSE for body rates (states 13-16)
+        - 'mse_thrust': float - MSE for thrust (derived from acceleration)
+    """
+    steps = commands.shape[0]
+    x = initial_state
+    
+    def blackbox_step(x, u, _, __) -> jnp.Array:
+        return acro_step_runtime.step(x, u)
+
+    def reset_fn(x):
+        return x.at[3:6].set(jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32))
+
+    def no_reset_fn(x):
+        return x
+    
+    def step(carry, t):
+        x_current = carry
+        u_t = commands[t]
+        
+        x_next = blackbox_step(x_current, u_t, dt, params)
+        x_pred = model_step(x_current, u_t, dt, params)
+        
+        return x_next, (x_pred, x_next)
+
+    _, (x_pred, x_nexts) = jax.lax.scan(step, x, jnp.arange(steps))
+    
+    errors = x_nexts - x_pred
+    
+    # Compute MSE for different state components
+    mse_position = float(jnp.mean(jnp.square(errors[:, 0:3])))
+    mse_velocity = float(jnp.mean(jnp.square(errors[:, 3:6])))
+    mse_acceleration = float(jnp.mean(jnp.square(errors[:, 6:9])))
+    mse_quaternion = float(jnp.mean(jnp.square(errors[:, 9:13])))
+    mse_body_rates = float(jnp.mean(jnp.square(errors[:, 13:16])))
+    
+    # Calculate thrust MSE from acceleration errors
+    thrust_meas = thrust_agent(x_nexts[:, 8], params.m, params.g)
+    thrust_pred = thrust_agent(x_pred[:, 8], params.m, params.g)
+    mse_thrust = float(jnp.mean(jnp.square(thrust_meas - thrust_pred)))
+    
+    return {
+        'errors': errors,
+        'mse_position': mse_position,
+        'mse_velocity': mse_velocity,
+        'mse_acceleration': mse_acceleration,
+        'mse_quaternion': mse_quaternion,
+        'mse_body_rates': mse_body_rates,
+        'mse_thrust': mse_thrust,
+    }
+
+
+def print_onestep_errors(error_dict: dict, label: str = ""):
+    """Print one-step prediction error metrics."""
+    print(f"\n{'='*50}")
+    print(f"One-Step Prediction Errors {label}")
+    print(f"{'='*50}")
+    print(f"MSE Position:     {error_dict['mse_position']:.8f}")
+    print(f"MSE Velocity:     {error_dict['mse_velocity']:.8f}")
+    print(f"MSE Acceleration: {error_dict['mse_acceleration']:.8f}")
+    print(f"MSE Quaternion:   {error_dict['mse_quaternion']:.8f}")
+    print(f"MSE Body Rates:   {error_dict['mse_body_rates']:.8f}")
+    print(f"MSE Thrust:       {error_dict['mse_thrust']:.8f}")
+    print(f"{'='*50}")
+
+
 if __name__ == "__main__":
     print("Exciting model and fitting parameters...")
     params = DEFAULT_PARAMS
@@ -512,10 +603,10 @@ if __name__ == "__main__":
         print("\nValidating fitted thrust coefficients on test signal...")
         for volt in range(24, 21, -1):
             print(f"\n--- Battery Voltage: {volt}V ---")
-            commands_test = generate_commands(dt=dt, duration=40, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
+            commands_test = generate_commands(dt=dt, duration=4, axis=3, freq=f*2, amplitude=a, func=generate_test_function)
             x_initial = acro_step_runtime.DEFAULT_STATE.at[20].set(float(volt))
-            blackbox_obs_test = excite_model(u=commands_test, model=False, initial_state=x_initial)
-            model_obs_test = excite_model(u=commands_test, model=True, params=params, initial_state=x_initial)
+            blackbox_obs_test = excite_model(u=commands_test, model=False, initial_state=x_initial, reset_velocity=False)
+            model_obs_test = excite_model(u=commands_test, model=True, params=params, initial_state=x_initial, reset_velocity=False)
 
             print_mse(3, blackbox_obs_test, model_obs_test, params)
             display_thrust(
@@ -551,5 +642,12 @@ if __name__ == "__main__":
                     (x_model[:, 2], "Model Z"),
                     title="Auxiliary Data"
                     )
+        fig_trajectory.suptitle("Drone Trajectory Comparison")
+
+    commands_test = generate_commands(dt=dt, duration=5, axis=0, freq=1.0, amplitude=1.0)
+    errors_model = onestep_prediction_errors(
+        commands_test, params=params
+    )
+    print_onestep_errors(errors_model, label="(Learned Model)")
 
     plt.show()
