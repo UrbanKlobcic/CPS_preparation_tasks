@@ -36,7 +36,6 @@ import numpy as np
 import rerun as rr
 
 
-# Quaternion and rotation helpers (NumPy)
 def _quat_rotate_np(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """
     Rotate vector v by unit quaternion q = [w, x, y, z].
@@ -109,7 +108,6 @@ def _make_gate_loops(
 
     def square_points(size: float) -> np.ndarray:
         h = size * 0.5
-        # In gate-local frame: plane at y=0, spanning x/z.
         return np.array(
             [
                 [-h, 0.0, -h],
@@ -136,23 +134,22 @@ def _make_gate_loops(
     return outer_loop, inner_loop
 
 
-# Drone body model (in body frame)
-_FRONT_SPAN = 0.18  # front motors Y distance (m)
-_BACK_SPAN = 0.28  # rear motors Y distance (m)
-_FB_DIST = 0.30  # distance between front/back motor lines (m)
+_FRONT_SPAN = 0.18  
+_BACK_SPAN = 0.28 
+_FB_DIST = 0.30 
 
 _front_x = +_FB_DIST / 2.0
 _back_x = -_FB_DIST / 2.0
 _front_y_off = _FRONT_SPAN / 2.0
 _back_y_off = _BACK_SPAN / 2.0
 
-# Indexing: 0=front_left, 1=front_right, 2=back_left, 3=back_right
+
 _DRONE_MOTORS_BODY = np.array(
     [
-        [_front_x, +_front_y_off, 0.0],  # front-left
-        [_front_x, -_front_y_off, 0.0],  # front-right
-        [_back_x, +_back_y_off, 0.0],  # rear-left
-        [_back_x, -_back_y_off, 0.0],  # rear-right
+        [_front_x, +_front_y_off, 0.0],  
+        [_front_x, -_front_y_off, 0.0], 
+        [_back_x, +_back_y_off, 0.0], 
+        [_back_x, -_back_y_off, 0.0], 
     ],
     dtype=np.float32,
 )
@@ -226,8 +223,6 @@ def quat_to_euler_rpy(q: np.ndarray) -> np.ndarray:
 
     return np.array([roll, pitch, yaw], dtype=np.float32)
 
-
-# Small scalar logging helper
 def _log_scalar(path: str, value: float) -> None:
     """Compat shim: log a single scalar using rr.Scalars."""
     rr.log(path, rr.Scalars(np.array([value], dtype=np.float32)))
@@ -236,9 +231,7 @@ def _log_scalar(path: str, value: float) -> None:
 def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarray]]:
     data = np.load(npy_path, allow_pickle=True)
 
-    # Handle pickle loaded as list (if saved with pickle.dump or just a list object)
     if isinstance(data, list) or (isinstance(data, np.ndarray) and data.shape == ()):
-        # 0-d np array containing a list
         if isinstance(data, np.ndarray):
             data = data.item()
         
@@ -256,7 +249,6 @@ def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarra
 
     # Handle numpy array format (N, 2) objects or structured
     if isinstance(data, np.ndarray) and data.dtype == object:
-        # data shape (T, 2) where col 0 is x, col 1 is u
         if data.ndim == 2 and data.shape[1] == 2:
             seq = []
             for t in range(data.shape[0]):
@@ -279,13 +271,11 @@ def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarra
 
     T, D = data.shape
 
-    # (T, 25) => [21 | 4]
     if D == 25:
         xs = data[:, :21].astype(np.float32)
         us = data[:, 21:25].astype(np.float32)
         return [(xs[t], us[t]) for t in range(T)]
 
-    # (T, 22) => [18 | 4]  (pad state to 21 for visualization)
     if D == 22:
         xs18 = data[:, :18].astype(np.float32)
         us = data[:, 18:22].astype(np.float32)
@@ -295,21 +285,18 @@ def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarra
             s = xs18[t]
             x = np.zeros((21,), dtype=np.float32)
 
-            # Assumed common prefix layout:
-            # pos(3), vel(3), acc(3), quat(4), body_rates(3)  => 16 values
             x[0:3] = s[0:3]
             x[3:6] = s[3:6]
             x[6:9] = s[6:9]
             x[9:13] = s[9:13]
             x[13:16] = s[13:16]
 
-            # Remaining 2 values in s: map to prev_thrust and battery
             prev_like = float(s[16])
             batt_like = float(s[17])
             if -1.1 <= prev_like <= 1.1:
-                x[19] = prev_like  # u_thrust_prev
+                x[19] = prev_like  
             if 20.0 <= batt_like <= 30.0:
-                x[20] = batt_like  # battery_V
+                x[20] = batt_like  
             else:
                 x[20] = 24.0
 
@@ -321,8 +308,6 @@ def _load_rollout_as_sequence(npy_path: str) -> list[tuple[np.ndarray, np.ndarra
         "Expected list, D=25 ([21|4]) or D=22 ([18|4])."
     )
 
-
-# Visualization function to be implemented
 def visualize_state_action_sequence(
         sequence: list[tuple[np.ndarray, np.ndarray]],
         gates: np.ndarray,
@@ -346,7 +331,6 @@ def visualize_state_action_sequence(
     rr.init(app_id, spawn=False)
     rr.save(recording_path)
 
-    # Static scene: world frame + gates
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
     gates = np.asarray(gates, dtype=np.float32)
@@ -356,7 +340,6 @@ def visualize_state_action_sequence(
     gate_centers = gates[:, 1:4].astype(np.float32)
     gate_quats = gates[:, 4:8].astype(np.float32)
 
-    # Optionally log gate centers
     rr.log("world/gates/centers", rr.Points3D(gate_centers), static=True)
 
     outer_size = 2.7
@@ -375,8 +358,8 @@ def visualize_state_action_sequence(
     rr.log("world/trajectory", rr.LineStrips3D([positions]), static=True) #if we want "growing" trajectory, we would log it per step without static=True
 
     # Per-step logging: drone + plots
-    dt = 0.01  # 100Hz default 
-    cam_ray_len = 2.0  # meters
+    dt = 0.01  
+    cam_ray_len = 2.0  
 
     for t, (x, u) in enumerate(sequence):
         x = np.asarray(x, dtype=np.float32).reshape(-1)
@@ -387,7 +370,6 @@ def visualize_state_action_sequence(
         if u.shape[0] != 4:
             raise ValueError(f"Action at t={t} has shape {u.shape}, expected (4,)")
 
-        # REQUIRED time handling (per sheet)
         rr.set_time("step", sequence=t)
         rr.set_time("sim_time", duration=t * dt)
 
@@ -412,7 +394,6 @@ def visualize_state_action_sequence(
         cam_ray = np.stack([pos, cam_end], axis=0).astype(np.float32)
         rr.log("world/drone/camera_ray", rr.LineStrips3D([cam_ray]))
 
-        # Time-series scalars
         speed = float(np.linalg.norm(vel))
         ang_speed = float(np.linalg.norm(body_rates))
 
@@ -424,7 +405,6 @@ def visualize_state_action_sequence(
         _log_scalar("plots/actions/u_yaw", float(u[2]))
         _log_scalar("plots/actions/u_thrust", float(u[3]))
 
-        # Optional (very useful) orientation traces
         _log_scalar("plots/orientation/roll", float(euler[0]))
         _log_scalar("plots/orientation/pitch", float(euler[1]))
         _log_scalar("plots/orientation/yaw", float(euler[2]))
@@ -433,14 +413,14 @@ def visualize_state_action_sequence(
 if __name__ == "__main__":
     gates_np  = np.array(
     [
-        [0, 12.500000, 2.000000, 1.350000, -0.707107, 0.000000, 0.000000, 0.707107],  # yaw = 270.00
-        [1, 6.500000, 6.000000, 1.350000, -0.382684, 0.000000, 0.000000, 0.923879],  # yaw = 225.00
-        [2, 5.500000, 14.000000, 1.350000, -0.258819, 0.000000, 0.000000, 0.965926],  # yaw = 210.00
-        [3, 2.500000, 24.000000, 1.350000, 0.000000, 0.000000, 0.000000, 1.000000],  # yaw = 180.00
-        [4, 7.500000, 30.000000, 1.350000, -0.642788, 0.000000, 0.000000, 0.766044],  # yaw = 260.00
-        [8, 18.500000, 22.000000, 1.350000, -0.087155, 0.000000, 0.000000, 0.996195],  # yaw = 190.00
-        [9, 20.500000, 14.000000, 1.350000, 0.087155, 0.000000, 0.000000, 0.996195],  # yaw = 170.00
-        [10, 18.500000, 6.000000, 1.350000, 0.382684, 0.000000, 0.000000, 0.923879],  # yaw = 135.00
+        [0, 12.500000, 2.000000, 1.350000, -0.707107, 0.000000, 0.000000, 0.707107],
+        [1, 6.500000, 6.000000, 1.350000, -0.382684, 0.000000, 0.000000, 0.923879], 
+        [2, 5.500000, 14.000000, 1.350000, -0.258819, 0.000000, 0.000000, 0.965926],
+        [3, 2.500000, 24.000000, 1.350000, 0.000000, 0.000000, 0.000000, 1.000000], 
+        [4, 7.500000, 30.000000, 1.350000, -0.642788, 0.000000, 0.000000, 0.766044],
+        [8, 18.500000, 22.000000, 1.350000, -0.087155, 0.000000, 0.000000, 0.996195]
+        [9, 20.500000, 14.000000, 1.350000, 0.087155, 0.000000, 0.000000, 0.996195],
+        [10, 18.500000, 6.000000, 1.350000, 0.382684, 0.000000, 0.000000, 0.923879],
     ], dtype=np.float32,)
 
     parser = argparse.ArgumentParser()
