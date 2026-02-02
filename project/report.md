@@ -4,6 +4,38 @@
 
 ## Task 2: Visualization of Rollouts with Rerun
 
+For Task 2, we implemented a visualization tool using the Rerun logging framework to inspect drone racing rollouts in both 3D space and time-synchronized plots.
+
+The core of the implementation is the function `visualize_state_action_sequence(sequence, gates, recording_path, app_id)`, which takes a rollout as a list of state–action pairs `(x, u)` and exports a `.rrd` recording. Each state `x` follows the provided 21-dimensional layout (position, velocity, acceleration, orientation quaternion, angular velocity, previous action, battery voltage), and each action `u` is a 4-dimensional normalized control command.
+
+### Visualization design
+
+The visualization is structured into static and dynamic components:
+
+**Static scene elements (logged once):**
+- A world coordinate frame using a right-handed, Z-up convention.
+- Racing gate geometry constructed from the provided gate centers and orientations. Each gate is visualized as an outer and inner rectangular loop in 3D space.
+- The full drone trajectory, visualized as a polyline connecting all position samples from the rollout.
+
+**Dynamic elements (logged per timestep):**
+- The drone pose over time, including motor positions, X-shaped arms, and a forward camera ray, derived from the drone’s position and orientation.
+- Time-synchronized scalar plots for key quantities:
+  - translational speed,
+  - angular speed,
+  - individual action components (roll, pitch, yaw, thrust),
+  - Euler angles (roll, pitch, yaw).
+
+A discrete time axis (`step`) is used to synchronize all spatial and scalar data, allowing smooth playback and frame-by-frame inspection in the Rerun viewer. An additional continuous time axis (`sim_time`) is logged using the simulator timestep (`dt = 0.01 s`).
+
+### Usage
+
+A small demo script is included via a `__main__` block. It loads an example rollout stored in a `.npy` file, converts it into the required `(x, u)` sequence format, and writes the visualization to `rollout.rrd`. The resulting file can be opened in the Rerun viewer to analyze drone motion, control behavior, and stability over time.
+
+### Purpose
+
+This visualization tool was used extensively to debug and analyze policies in Task 3. In particular, it helped identify issues such as unstable control, incorrect orientation handling, and inefficient gate approaches by correlating 3D trajectories with action and kinematic time-series.
+
+
 ## Task 3: Reinforcement Learning with PPO
 
 ### 3.1 Observation Design
