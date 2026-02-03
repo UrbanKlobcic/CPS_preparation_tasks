@@ -77,7 +77,7 @@ class EnvParams(NamedTuple):
     # rewards
     w_gate: float = 10.0
     w_progress: float = 0.5
-    w_speed: float = -0.001
+    w_speed: float = -0.01
     w_survival: float = -0.01
     
     # penalties
@@ -202,7 +202,7 @@ class DroneRaceEnv:
         prev_gate_pos, _ = get_gate_pose(prev_gate_idx)
         
         source_pos = jax.lax.select(
-            target_gate_idx == 0,
+            params.initial_gate_id == -1,
             START_POS,
             prev_gate_pos
         )

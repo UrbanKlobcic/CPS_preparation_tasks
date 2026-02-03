@@ -168,24 +168,23 @@ To avoid this issue, we train for 100M more steps with the following parameter a
 *   **`w_survival = -0.05`**: More penalty per step to discourage looping.
 *   **`w_missed_gate = 10.0`**: Higher penalty for missing gates.
 
-The problem with loops is now fixed, but it struggles with starting from the fixed starting position and frequently crashes during longer rollouts of 2000-4000 steps instead of the 1000 steps used for training. The following image, generated using `python eval_agent.py --checkpoint checkpoints/ppo_drone_2.ckpt`, shows a better racing line:
+The problem with loops is now fixed, but it struggles with starting from the fixed starting position and frequently crashes during longer rollouts of 2000 steps instead of the 1000 steps used for training. The following image, generated using `python eval_agent.py --checkpoint checkpoints/ppo_drone_2.ckpt`, shows a better racing line:
 
 ![Position Density after 200M steps](assets/position_density_200M.png "Position Density after 200M steps")
 
 We train for 50M more steps, starting from the fixed starting position with the following parameter and reward changes:
 
-*   **`TOTAL_TIMESTEPS = 5e7`**: Decreased to 50M steps.
-*   **`NUM_STEPS = 4096`**: Training for longer rollouts.
-*   **`w_crash = 50.0`**: Higher penalty for crashing.
-
-The agent quickly learns to avoid crashing and survives longer rollouts during training. However, during the evaluation rollout, it sometimes cuts corners and goes out of bounds due to high speed.
-
-In the next 50M steps, we try to make the agent more robust by the following parameter and reward changes:
-
 *   **`LR: 5e-5` with Linear Annealing:** Decreased again to not destroy the progress.
-*   **`gate_radius = 0.7`**: Decreased by 5cm to stop the agent from cutting corners.
-*   **`w_control = 0.05`**: Enabled control smoothness penalty.
+*   **`TOTAL_TIMESTEPS = 5e7`**: Decreased to 50M steps.
+*   **`NUM_STEPS = 2048`**: Training for longer rollouts.
+*   **`gate_radius = 0.7`**: Decreased by 10cm to stop the agent from cutting corners.
+*   **`w_progress = 0.5`**: Decreased since the agent is already learning to follow the track.
+*   **`w_control = 0.01`**: Enabled control smoothness penalty.
+*   **`w_speed = -0.01`**: Slightly slow down the agent.
+*   **`w_missed_gate = 50.0`**: Higher penalty for missing gates.
+*   **`w_crash = 100.0`**: Higher penalty for crashing.
 *   **`noise_pos = 0.02`, `noise_vel = 0.01`, `noise_ori = 0.02`, `noise_rate = 0.02`**: Added more noise to position, velocity, orientation, and angular rates.
+
 
 
 ### 3.5 Discussion
