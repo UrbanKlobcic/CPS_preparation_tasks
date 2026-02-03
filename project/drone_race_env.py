@@ -201,8 +201,9 @@ class DroneRaceEnv:
         prev_gate_idx = (target_gate_idx - 1) % NUM_GATES
         prev_gate_pos, _ = get_gate_pose(prev_gate_idx)
         
+        # only use fixed start position if gate 0 is specified
         source_pos = jax.lax.select(
-            params.initial_gate_id == -1,
+            params.initial_gate_id == 0,
             START_POS,
             prev_gate_pos
         )
