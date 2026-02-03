@@ -68,7 +68,7 @@ BATTERY_MIN = 22.0
 BATTERY_MAX = 24.0
 
 class EnvParams(NamedTuple):
-    gate_radius: float = GATE_WIDTH_INNER / 2.0 - 0.1 # 10cm per side for safety
+    gate_radius: float = GATE_WIDTH_INNER / 2.0 - 0.3 # 10cm per side for safety
     max_episode_steps: int = SIM_HZ * 12
     
     # -1 for random, >=0 for specific gate
@@ -76,15 +76,15 @@ class EnvParams(NamedTuple):
     
     # rewards
     w_gate: float = 10.0
-    w_progress: float = 0.5
-    w_speed: float = -0.01
+    w_progress: float = 1.0
+    w_speed: float = 0.001
     w_survival: float = -0.01
     
     # penalties
     w_control: float = 0.01
     w_altitude: float = 0.01
-    w_missed_gate: float = 50.0
-    w_crash: float = 100.0
+    w_missed_gate: float = 10.0
+    w_crash: float = 25.0
     w_timeout: float = 0.0
     
     # EXTENSION: noise parameters (std dev)

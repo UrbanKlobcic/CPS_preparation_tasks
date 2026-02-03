@@ -29,24 +29,24 @@ def main():
     args = parser.parse_args()
 
     config = {
-        "LR": 5e-5,
-        "NUM_ENVS": 32,
+        "LR": 5e-4,
+        "NUM_ENVS": 64,
         "NUM_STEPS": 2048,
-        "TOTAL_TIMESTEPS": 5e7,
+        "TOTAL_TIMESTEPS": 2e8,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.1,
-        "ENT_COEF": 0.01,
+        "CLIP_EPS": 0.2,
+        "ENT_COEF": 0.02,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
-        "ACTIVATION": "tanh",
+        "ACTIVATION": "relu",
         "ANNEAL_LR": True,
-        "RUN_NAME": "ppo_drone_3",
+        "RUN_NAME": "ppo_drone_7_from_scratch",
         "CKPT_DIR": "checkpoints",
         "DEBUG": True,
-        "CHECKPOINT_FREQ": 5e6,
+        "CHECKPOINT_FREQ": 1e7,
     }
 
     loaded_params = None

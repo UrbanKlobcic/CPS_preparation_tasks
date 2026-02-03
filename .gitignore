@@ -1,4 +1,6 @@
+project/.venv
 __pycache__
 *.npy
 *.png
 !project/report_images/*.png
+!project/mlruns/**/*.png

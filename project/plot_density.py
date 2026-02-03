@@ -27,7 +27,7 @@ def plot_density(network_params):
     env = AutoResetWrapper(env)
     env = VecEnv(env)
     
-    network = ActorCritic(env.action_space(env_params).shape[0], activation="tanh")
+    network = ActorCritic(env.action_space(env_params).shape[0], activation="relu")
     
     rng = jax.random.PRNGKey(0)
     rng, _rng = jax.random.split(rng)

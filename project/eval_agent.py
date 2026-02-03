@@ -36,7 +36,7 @@ def main():
 
     env = DroneRaceEnv(dynamics_fn=blackbox_dynamics_adapter)
 
-    network = ActorCritic(env.action_size, activation="tanh")
+    network = ActorCritic(env.action_size, activation="relu")
 
     eval_params = DEFAULT_PARAMS._replace(
         max_episode_steps=args.steps,
