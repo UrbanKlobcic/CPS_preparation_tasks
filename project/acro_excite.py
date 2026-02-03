@@ -36,6 +36,7 @@ def excite_model(
     Args:
         u: array of shape (T, 4) with commands
         model: if True, use the learned model; if False, use the blackbox
+        reset_velocity: if true set velocity of state to 0 if accellerations >20m/s^2 are detected
 
     Returns:
         [w, a, b] as one array with shape (T, 7)
@@ -67,7 +68,6 @@ def excite_model(
 
         u_t = u[t]
 
-        # Predict with model
         x_next = step_fn(x, u_t, dt, params)
         pos_pred = x_next[0:3]  # Position (m)
         vel_pred = x_next[3:6]  # Velocity (m/s)
@@ -79,7 +79,6 @@ def excite_model(
 
         return x_next, x_next  # jnp.concatenate([w_pred, acc_pred, bat_pred], axis=None)
 
-    # collect model responses
     x_final, result = jax.lax.scan(
         step,
         x,
@@ -103,10 +102,10 @@ def generate_sine_function(time, freq, amplitude):
 
 def generate_learning_function(time, freq, amplitude):
     return amplitude * (
-        jnp.heaviside(time - 0.019, 1.0) * jnp.heaviside(0.021 - time, 1.0)
-        + (jnp.heaviside(time - 0.5, 1.0) * jnp.heaviside(0.75 - time, 1.0) - 1)
-        + jnp.heaviside(time - 0.85, 1.0) * jnp.heaviside(1.0 - time, 1.0)
-        + (jnp.heaviside(time - 1.0, 1.0) * jnp.sin(2 * jnp.pi * freq * time))
+        jnp.heaviside(time - 0.019, 1.0) * jnp.heaviside(0.021 - time, 1.0)       # dirac
+        + (jnp.heaviside(time - 0.5, 1.0) * jnp.heaviside(0.75 - time, 1.0) - 1)  # low constant
+        + jnp.heaviside(time - 0.85, 1.0) * jnp.heaviside(1.0 - time, 1.0)        # high constant
+        + (jnp.heaviside(time - 1.0, 1.0) * jnp.sin(2 * jnp.pi * freq * time))    # sine wave until the end of time
     )
 
 
@@ -194,7 +193,6 @@ def fit_tau(log: ExcitationLog, axis: int, lr: float = 0.01, steps: int = 100,
             g=params.g,
         )
 
-        # do this as subfunction to capture the updated params without adding more arguments (because of scan)
         def forward(x, u_t):
             x_pred = model_step(x, u_t, dt, params_t)
             return x_pred, x_pred[13:16]
@@ -233,8 +231,10 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, s
     """
 
     def residuals_fn(coeffs: jnp.Array, log: ExcitationLog) -> jnp.Array:
+        par = params._replace(thrust_coeffs=coeffs)
+
         def forward(x, u_t):
-            x_pred = model_step(x, u_t, dt, params._replace(thrust_coeffs=coeffs))
+            x_pred = model_step(x, u_t, dt, par)
             return x_pred, x_pred
 
         _, pred = jax.lax.scan(
@@ -243,40 +243,31 @@ def fit_thrust(log: ExcitationLog, params: ModelParameters, lr: float = 0.001, s
             log.u
         )
 
-        # Estimate thrust from observations as given in the assignment
-        T_pred = thrust_agent(pred[:, 8], params.m, params.g)
-        T_meas = thrust_agent(log.a[:, 2], params.m, params.g)
+        T_pred = thrust_agent(pred[:, 8], par.m, par.g)
+        T_meas = thrust_agent(log.a[:, 2], par.m, par.g)
         # jax.debug.print("T_meas: {T_meas_}, T_pred: {T_pred_}", T_meas_=T_meas[0:5], T_pred_=T_pred[0:5])
         # jax.debug.print("shape T_meas: {shape_meas_}, shape T_pred: {shape_pred_}", shape_meas_=T_meas.shape, shape_pred_=T_pred.shape)
         # jax.debug.print("shape log.a[:, 2]: {shape_meas_}, shape pred[:, 8]: {shape_pred_}", shape_meas_=log.a[:, 2].shape, shape_pred_=pred[:, 8].shape)
         # jax.debug.print("coeffs: {coeffs_}", coeffs_=coeffs)
         return T_meas - T_pred
 
-    def loss_fn(coeffs: jnp.Array, log: ExcitationLog) -> jnp.Array:
-        res = residuals_fn(coeffs, log)
-        return jnp.mean(res ** 2)
-
     jacobian_fn = jax.jacfwd(residuals_fn)
 
     k = 1
     coeffs_init = jnp.array([k, k, k, k, k, k], dtype=jnp.float32)
 
-    # Simple gradient descent
     coeffs = coeffs_init
 
     def update_fn(coeffs, _):
-        # # usual version
-        # grad = grad_fn(coeffs, log)
-        # coeffs = coeffs - lr * grad
 
-        # nonlinear least squares version
-        r = residuals_fn(coeffs, log)  # shape (T,)
-        J = jacobian_fn(coeffs, log)  # shape (T, 6)
+        # nonlinear least squares like in https://www.youtube.com/watch?v=8evmj2L-iCY + damping
+        r = residuals_fn(coeffs, log)
+        J = jacobian_fn(coeffs, log)
         # Levenberg-Marquardt damping
         lambda_damping = 1e-3
         JT = J.transpose()
-        JTJ = JT @ J + lambda_damping * jnp.eye(JT.shape[0])  # shape (6, 6)
-        JTr = JT @ r  # shape (6,)
+        JTJ = JT @ J + lambda_damping * jnp.eye(JT.shape[0])
+        JTr = JT @ r
         update = jnp.linalg.solve(JTJ, JTr)
         coeffs = coeffs - lr * update
         return coeffs, None
@@ -343,13 +334,6 @@ def print_mse(axis: int, blackbox_obs_test: jax.Array, model_obs_test: jax.Array
 
 
 def plot_aux_3d(*args, dt: float = 0.01, title: str = "Commands"):
-    """
-    Plot additional data over time.
-
-    Args:
-        data: array of shape (T, N) with auxiliary data
-        title: title for the plot
-    """
     time = jnp.arange(args[0][0].shape[0]) * dt
 
     ax = plt.subplot(224)
@@ -359,20 +343,13 @@ def plot_aux_3d(*args, dt: float = 0.01, title: str = "Commands"):
 
     # Labels and title
     ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Command Value')
+    ax.set_ylabel('Position (m) and Acceleration (m/s^2)')
     ax.set_title(title)
     ax.legend()
     ax.grid(True)
 
 
 def plot_commands_3d(commands: jnp.Array, dt: float = 0.01, title: str = "Commands"):
-    """
-    Plot the 3D commands over time.
-
-    Args:
-        commands: array of shape (T, 4) with commands [roll, pitch, yaw, thrust]
-        title: title for the plot
-    """
     time = jnp.arange(commands.shape[0]) * dt
 
     print(f"commands shape: {commands.shape}")
@@ -390,7 +367,7 @@ def plot_commands_3d(commands: jnp.Array, dt: float = 0.01, title: str = "Comman
     ax.grid(True)
 
 
-def plot_trajectory_3d(commands: jnp.Array, model: bool = False,
+def trajectory_3d(commands: jnp.Array, model: bool = False,
                        params: ModelParameters = DEFAULT_PARAMS,
                        initial_state: jax.Array = acro_step_runtime.DEFAULT_STATE,
                        dt: float = 0.01, title: str = "Drone Trajectory"):
@@ -407,26 +384,21 @@ def plot_trajectory_3d(commands: jnp.Array, model: bool = False,
     Returns:
         result: array of shape (T, 21) with state vectors over time
     """
-    # Execute the command sequence
+
     result = excite_model(u=commands, model=model, dt=dt, params=params, initial_state=initial_state, reset_velocity=False)
 
-    # Extract positions from result (first 3 elements of state vector)
     positions = result[:, 0:3]
 
-    # Create 3D plot
     sub = 222 if model else 221
     ax = plt.subplot(sub, projection='3d')
 
-    # Plot trajectory
     ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], 'b-', linewidth=2, label='Trajectory')
 
-    # Mark start and end points
     ax.scatter([positions[0, 0]], [positions[0, 1]], [positions[0, 2]],
                color='green', s=100, marker='o', label='Start', zorder=5)
     ax.scatter([positions[-1, 0]], [positions[-1, 1]], [positions[-1, 2]],
                color='red', s=100, marker='s', label='End', zorder=5)
 
-    # Labels and title
     ax.set_xlabel('X Position (m)')
     ax.set_ylabel('Y Position (m)')
     ax.set_zlabel('Z Position (m)')
@@ -445,7 +417,7 @@ def onestep_prediction_errors(
 ) -> dict:
     """
     Calculate one-step prediction errors by comparing model predictions to actual observations.
-    
+
     For each timestep t, uses state x_t and command u_t to predict x_{t+1}, then compares
     to the observed x_{t+1}.
 
@@ -468,7 +440,7 @@ def onestep_prediction_errors(
     """
     steps = commands.shape[0]
     x = initial_state
-    
+
     def blackbox_step(x, u, _, __) -> jnp.Array:
         return acro_step_runtime.step(x, u)
 
@@ -477,32 +449,31 @@ def onestep_prediction_errors(
 
     def no_reset_fn(x):
         return x
-    
+
     def step(carry, t):
         x_current = carry
         u_t = commands[t]
-        
+
         x_next = blackbox_step(x_current, u_t, dt, params)
         x_pred = model_step(x_current, u_t, dt, params)
-        
+
         return x_next, (x_pred, x_next)
 
     _, (x_pred, x_nexts) = jax.lax.scan(step, x, jnp.arange(steps))
-    
+
     errors = x_nexts - x_pred
-    
-    # Compute MSE for different state components
+
     mse_position = float(jnp.mean(jnp.square(errors[:, 0:3])))
     mse_velocity = float(jnp.mean(jnp.square(errors[:, 3:6])))
     mse_acceleration = float(jnp.mean(jnp.square(errors[:, 6:9])))
     mse_quaternion = float(jnp.mean(jnp.square(errors[:, 9:13])))
     mse_body_rates = float(jnp.mean(jnp.square(errors[:, 13:16])))
-    
+
     # Calculate thrust MSE from acceleration errors
     thrust_meas = thrust_agent(x_nexts[:, 8], params.m, params.g)
     thrust_pred = thrust_agent(x_pred[:, 8], params.m, params.g)
     mse_thrust = float(jnp.mean(jnp.square(thrust_meas - thrust_pred)))
-    
+
     return {
         'errors': errors,
         'mse_position': mse_position,
@@ -515,7 +486,6 @@ def onestep_prediction_errors(
 
 
 def print_onestep_errors(error_dict: dict, label: str = ""):
-    """Print one-step prediction error metrics."""
     print(f"\n{'='*50}")
     print(f"One-Step Prediction Errors {label}")
     print(f"{'='*50}")
@@ -541,6 +511,8 @@ if __name__ == "__main__":
     do_tau = True
     do_thrust = True
     do_trajectory = True
+    # keep the plots for the report open
+    do_plot = False
 
     if do_tau:
         print("Fitting taus on learning signal...")
@@ -581,7 +553,6 @@ if __name__ == "__main__":
                 prediction=model_obs_test[:, 13:16],
             )
 
-        fig_tau.show()
         print("\n")
         print("*" * 40)
         print(f"Learned tau values: {learned_taus}")
@@ -594,7 +565,7 @@ if __name__ == "__main__":
         commands_learn = generate_commands(dt=dt, duration=60, axis=3, freq=f, amplitude=a)
         blackbox_obs = excite_model(u=commands_learn, model=False)
         learn_log = ExcitationLog(u=commands_learn, a=blackbox_obs[:, 6:9], v=None, w=blackbox_obs[:, 13:16], p=None, q=None, b=blackbox_obs[:, 20])
-        fitted_coeffs = fit_thrust(learn_log, params, steps=100)
+        fitted_coeffs = fit_thrust(learn_log, params, steps=10000)
         print("*" * 40)
         print(f"Fitted thrust coefficients: {fitted_coeffs.tolist()}")
         print("*" * 40)
@@ -615,7 +586,6 @@ if __name__ == "__main__":
                 prediction=ExcitationLog(u=commands_test, a=model_obs_test[:, 6:9], v=None, w=None, p=None, q=None, b=model_obs_test[:, 20]),
             )
 
-        fig_thrust.show()
 
     if do_trajectory:
         print("\nPlotting trajectory...")
@@ -625,29 +595,34 @@ if __name__ == "__main__":
 
         commands = generate_commands(dt=0.01, duration=5, axis=3, freq=1.0, amplitude=1.0,
                                      func=generate_sine_function
-                                     # func=generate_constant_function
-                                     # func=generate_dirac_function
+                                    #  func=generate_constant_function
+                                    #  func=generate_dirac_function
                                      )
         commands = commands.at[:, 0].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.1, amplitude=1))
         commands = commands.at[:, 1].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.2, amplitude=1))
         commands = commands.at[:, 2].set(generate_sine_function(jnp.arange(commands.shape[0]) * dt, freq=1.3, amplitude=1))
-        x_black = plot_trajectory_3d(commands, model=False, title="Blackbox Trajectory", params=params, initial_state=x_initial)
-        x_model = plot_trajectory_3d(commands, model=True, title="Model Trajectory", params=params, initial_state=x_initial)
+        x_black = trajectory_3d(commands, model=False, title="Blackbox Trajectory", params=params, initial_state=x_initial)
+        x_model = trajectory_3d(commands, model=True, title="Model Trajectory", params=params, initial_state=x_initial)
         plot_commands_3d(commands, title="Commands")
-        plot_aux_3d((x_black[:, 0], "Blackbox X"),
-                    (x_black[:, 1], "Blackbox Y"),
-                    (x_black[:, 2], "Blackbox Z"),
-                    (x_model[:, 0], "Model X"),
-                    (x_model[:, 1], "Model Y"),
-                    (x_model[:, 2], "Model Z"),
+        plot_aux_3d(
+                    (x_black[:, 0], "Blackbox pos_X"),
+                    (x_model[:, 0], "Model pos_X"),
+                    (x_black[:, 1], "Blackbox pos_Y"),
+                    (x_model[:, 1], "Model pos_Y"),
+                    (x_black[:, 2], "Blackbox pos_Z"),
+                    (x_model[:, 2], "Model pos_Z"),
+                    (x_black[:, 8], "Blackbox a_z"),
+                    (x_model[:, 8], "Model a_z"),
                     title="Auxiliary Data"
                     )
         fig_trajectory.suptitle("Drone Trajectory Comparison")
 
-    commands_test = generate_commands(dt=dt, duration=5, axis=0, freq=1.0, amplitude=1.0)
-    errors_model = onestep_prediction_errors(
-        commands_test, params=params
-    )
-    print_onestep_errors(errors_model, label="(Learned Model)")
+    for axis in range(4):
+        commands_eval = generate_commands(dt=dt, duration=5, axis=axis, freq=1.0, amplitude=1.0, func=generate_test_function)
+        errors_model = onestep_prediction_errors(
+            commands_eval, params=params,
+        )
+        print_onestep_errors(errors_model, label=f"(excited {AXIS_NAMES[axis]})")
 
-    plt.show()
+    if do_plot:
+        plt.show()

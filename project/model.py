@@ -55,14 +55,9 @@ class ModelParameters(NamedTuple):
 DEFAULT_PARAMS = ModelParameters(
     tau=jnp.array([0.017000000923871994, 0.017000000923871994, 0.029999976977705956, 0.021333327516913414], dtype=jnp.float32),
 
-    thrust_coeffs=jnp.array([
-        -0.3610572814941406,
-        1.2703458070755005,
-        0.9464727640151978,
-        -0.23042286932468414,
-        1.0582232475280762,
-        1.0379574298858643
-    ], dtype=jnp.float32),  # fitted values
+    thrust_coeffs=jnp.array(
+        [-13.355788230895996, 3.811885356903076, 0.4342711269855499, -11.924173355102539, 1.6140661239624023, 1.3996779918670654]
+        , dtype=jnp.float32),  # fitted values
 
     max_rate=jnp.array([618.0, 618.0, 120.0], dtype=jnp.float32),
     m=1.0,
@@ -147,15 +142,15 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
 
     # 5) Thrust
     T = thrust_polynomial(u_delayed[3], battery, params.thrust_coeffs)
-
-    # 6) Integrate state based on computed acceleration
     # TODO: check if we need q or q_next here
     a_thrust_world = quat_rotate(q, jnp.array([0.0, 0.0, (T / params.m)])) - jnp.array([0.0, 0.0, params.g])
+
+    # 6) Integrate state based on computed acceleration
     vel_next = vel + a_thrust_world * dt
-    pos_next = pos + vel_next * dt + 0.5 * a_thrust_world * dt ** 2
+    pos_next = pos + vel * dt + 0.5 * a_thrust_world * dt ** 2
 
     # X) battery discharge 1V per minute
-    battery = battery - (dt / 60.0)  # optional
+    battery_next = battery - (dt / 60.0)
 
     # 7) Update state fields
     x_next = jnp.concatenate([
@@ -165,7 +160,7 @@ def step(x: jax.Array, u: jax.Array, dt: float, params: ModelParameters) -> jax.
         q_next,
         body_rates,
         u_delayed,
-        battery,
+        battery_next,
     ], axis=None)  # flatten and then concatenate
 
     return x_next

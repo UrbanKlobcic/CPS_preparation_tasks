@@ -2,6 +2,66 @@
 
 ## Task 1: Modeling of Environment Dynamics
 
+### Model
+
+The [model](model.py) is implementing slightly simplified dynamics of the blackbox drone model.
+One assumption is, that we can ignore aerodynamic drag. However, this may lead to differences when the drone reaches high velocities. To make this
+assumption hold while generating the data, the velocity of the models is reset, once it reaches 20 m/s.
+Addidionally, the thrust approximation is done under the assumption of purely vertical movement.
+The Battery is modeled to decrease by 1 Volt every 60 seconds.
+
+### Identification Procedure
+
+The system identification is done in [acro_excite.py](acro_excite.py) by first exciting the blackbox model with a dirac pulse, steps and a sine wave 
+in the range from -1 to 1 for each element of the action commands individually. This model response generation is done in the `excite_model` function,
+which can be used on the blackbox or our model.
+The blackbox response is then used as reference for fitting the tau values and thrust coefficients.
+
+The tau values for roll, pitch and yaw are fitted using a linear regression approach implemented in the function `fit_tau`.
+
+For thrust coefficient fitting we implemented a least squares algorithm to find fitting coefficients for the given thrust polynomial.
+Using the mean tau from the other axes for the thrust tau helped improve the results.
+(Sadly, the message on tuwel, that it's hard to get good results without using scipy's least squares, came too late for us...)
+
+
+### Validation results
+
+For validation of the results, another set of commands is used that also include a pulse, steps and sine waves with changing frequency for the
+different components of the commands.
+
+Plotting the results of exciting the roll, pitch and yaw axis for the blackbox and our model for the validation command sequence results in the 
+following diagram:
+![fitted tau plots](report_images/tau_plots.png "tau validation plots")
+
+Plotting the results of exciting thrust for different voltages yields the following diagram:
+![thrust response to validation signal plots](report_images/thrust_plots.png "thrust plots")
+
+The **one step prediction mean square error** for these signals is:
+
+|                   | roll       | pitch      | yaw        | thrust      |
+|-------------------|------------|------------|------------|-------------|
+| MSE Position:     | 0.00000001 | 0.00000001 | 0.00000001 | 0.00000001  |
+| MSE Velocity:     | 0.00032150 | 0.00031744 | 0.00030133 | 0.00044554  |
+| MSE Acceleration: | 3.21503377 | 3.17442513 | 3.01326990 | 4.45537949  |
+| MSE Quaternion:   | 0.00000000 | 0.00000000 | 0.00000000 | 0.00000000  |
+| MSE Body Rates:   | 0.00000000 | 0.00000000 | 0.00000000 | 0.00000000  |
+| MSE Thrust:       | 9.58668518 | 9.46389008 | 9.03981018 | 13.36613655 |    
+
+Here we can already see, that the acceleration/thrust modelling seems to have issues.
+We can see a clear influence of drag even for short simulations, as depicted in the following diagram for a constant thrust command of 1 and all body rates commands set to 0.
+![effect of drag for constant maximum thrust](report_images/thrust_drag_effect.png "effect of drag")
+
+
+Finally, a short 3D trajectory is generated using sine waves on all command axes simultaneously (with different frequencies) to verify that the
+overall behaviour is plausible when compared to the blackbox.
+
+![Simple 3D trajectory to visually check that the overall model behaves approximately the right way](report_images/trajectory_plot.png "3D Trajectory")
+
+### Usage
+`python acro_excite.py`
+This collects the data from the blackbox for the training/learning and valitation/test command sequences and runs the fitting algorithms on the model.
+The plots for this report can also be shown by setting the `do_plot` variable to `True`.
+
 ## Task 2: Visualization of Rollouts with Rerun
 
 For Task 2, we implemented a visualization tool using the Rerun logging framework to inspect drone racing rollouts in both 3D space and time-synchronized plots.
