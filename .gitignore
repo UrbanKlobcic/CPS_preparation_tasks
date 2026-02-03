@@ -1,6 +1,4 @@
 __pycache__
-project/mlruns
-project/checkpoints
 *.npy
 *.png
 !project/report_images/*.png
