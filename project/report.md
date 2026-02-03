@@ -138,7 +138,7 @@ We use a simple actor-critic architecture with:
 
 ### 3.4 Training Configuration
 
-We trained using the `purejaxrl` PPO implementation with the following hyperparameters:
+Training of the PPO agent based on  `purejaxrl` is done in several steps. In the first 100M steps, we use the following hyperparameters:
 
 *   **`LR: 5e-4` with Linear Annealing:** We start with a relatively aggressive learning rate to quickly learn basic stabilization and navigation features. Annealing to 0 ensures convergence in the fine-tuning phase.
 *   **`NUM_ENVS: 32`**: Large enough to approximate the true policy gradient, not too large for reasonable training on CPU.
@@ -150,6 +150,42 @@ We trained using the `purejaxrl` PPO implementation with the following hyperpara
 *   **`ENT_COEF: 0.02`**: Entropy value of 0.02 keeps the policy stochastic enough to explore alternative trajectories (e.g., taking a wider turn). Larger values lead to inconsistency (random crashes), smaller values lead to local optima, like slowing down a lot before a tight turn instead of taking a wider turn.
 *   **`VF_COEF: 0.5`**: Scales the Value Function loss relative to the Policy loss. This allows us to control whether to prioritize learning for the Actor or the Critic. Balanced training (0.5) works well.
 *   **`MAX_GRAD_NORM: 0.5`**: Prevents spikes in gradients (e.g. from crashes) from destroying the policy.
+
+
+The agent first learns to hover and move towards the current gate. The following density plot with 256 environments generated using `python eval_agent.py --checkpoint checkpoints/ppo_drone_1_step14942208.ckpt` shows this initial exploration after about 15M steps.
+
+![Position Density after 15M steps](assets/position_density_15M.png "Position Density after 15M steps")
+
+Then, it learns to follow the track and pass through multiple gates. However, it sometimes misses gates, which then causes it to get stuck in small loops. The following shows the position density generated using `python eval_agent.py --checkpoint checkpoints/ppo_drone_1.ckpt`:
+
+![Position Density after 100M steps](assets/position_density_100M.png "Position Density after 100M steps")
+
+To avoid this issue, we train for 100M more steps with the following parameter and reward changes:
+
+*   **`LR: 1e-4` with Linear Annealing:** We reduce the learning rate to not destroy the progress.
+*   **`ENT_COEF: 0.01`**: Not much exploration is needed anymore.
+*   **`CLIP_EPS: 0.1`**: We reduce the clipping to avoid the agent from diverging too much.
+*   **`w_survival = -0.05`**: More penalty per step to discourage looping.
+*   **`w_missed_gate = 10.0`**: Higher penalty for missing gates.
+
+The problem with loops is now fixed, but it struggles with starting from the fixed starting position and frequently crashes during longer rollouts of 2000-4000 steps instead of the 1000 steps used for training. The following image, generated using `python eval_agent.py --checkpoint checkpoints/ppo_drone_2.ckpt`, shows a better racing line:
+
+![Position Density after 200M steps](assets/position_density_200M.png "Position Density after 200M steps")
+
+We train for 50M more steps, starting from the fixed starting position with the following parameter and reward changes:
+
+*   **`TOTAL_TIMESTEPS = 5e7`**: Decreased to 50M steps.
+*   **`NUM_STEPS = 4096`**: Training for longer rollouts.
+*   **`w_crash = 50.0`**: Higher penalty for crashing.
+
+The agent quickly learns to avoid crashing and survives longer rollouts during training. However, during the evaluation rollout, it sometimes cuts corners and goes out of bounds due to high speed.
+
+In the next 50M steps, we try to make the agent more robust by the following parameter and reward changes:
+
+*   **`LR: 5e-5` with Linear Annealing:** Decreased again to not destroy the progress.
+*   **`gate_radius = 0.7`**: Decreased by 5cm to stop the agent from cutting corners.
+*   **`w_control = 0.05`**: Enabled control smoothness penalty.
+*   **`noise_pos = 0.02`, `noise_vel = 0.01`, `noise_ori = 0.02`, `noise_rate = 0.02`**: Added more noise to position, velocity, orientation, and angular rates.
 
 
 ### 3.5 Discussion

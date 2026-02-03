@@ -27,7 +27,7 @@ def blackbox_dynamics_adapter(x, u, dt):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument("--steps", type=int, default=1200)
     parser.add_argument("--out", type=str, default="evaluation.npy")
     args = parser.parse_args()
 
@@ -39,7 +39,7 @@ def main():
     network = ActorCritic(env.action_size, activation="tanh")
 
     eval_params = DEFAULT_PARAMS._replace(
-        max_episode_steps=args.steps + 100,
+        max_episode_steps=args.steps,
         initial_gate_id=0,
         noise_pos=0.0,
         noise_vel=0.0,

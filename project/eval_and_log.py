@@ -18,7 +18,7 @@ def eval_and_log_artifacts(train_state, config):
     
     # zero noise for evaluation + start at gate 0
     eval_params = DEFAULT_PARAMS._replace(
-        max_episode_steps=SIM_HZ * 60,
+        max_episode_steps=SIM_HZ * 20,
         initial_gate_id=0,
         noise_pos=0.0,
         noise_vel=0.0,
@@ -34,10 +34,10 @@ def eval_and_log_artifacts(train_state, config):
     network = ActorCritic(env.action_size, activation=config["ACTIVATION"])
     
     steps = 0
-    passed_gates = 0
     total_reward = 0.0
     done = False
     action_log = []
+    info = {}
     
     while steps < eval_params.max_episode_steps and not done:
         pi, _ = network.apply(train_state.params, obs)
@@ -50,7 +50,6 @@ def eval_and_log_artifacts(train_state, config):
         rng, step_rng = jax.random.split(rng)
         obs, state, reward, done, info = env.step(step_rng, state, action, eval_params)
         
-        passed_gates += info["gates_passed"]
         total_reward += reward
         steps += 1
     
@@ -62,7 +61,7 @@ def eval_and_log_artifacts(train_state, config):
     print(f"Min Action:  {np.min(action_arr, axis=0)}")
     print("--------------------------------\n")
     
-    print(f"Evaluation finished. Steps: {len(trajectory)}, Gates Passed: {passed_gates}, Total Reward: {total_reward}")
+    print(f"Evaluation finished. Steps: {len(trajectory)}, Gates Passed: {info['gates_passed']}, Total Reward: {total_reward}")
     
     npy_path = "evaluation_rollout.npy"
     np.save(npy_path, np.array(trajectory, dtype=object))

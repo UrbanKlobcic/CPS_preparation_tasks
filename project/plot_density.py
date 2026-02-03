@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, GATE_WIDTH, SIM_HZ
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, GATE_WIDTH_OUTER, SIM_HZ
 from wrappers import FlattenObservationWrapper, VecEnv, AutoResetWrapper
 from network import ActorCritic
 from utils import quat_rotate
@@ -82,10 +82,10 @@ def plot_density(network_params):
         cx, cy = float(pos[0]), float(pos[1])
         dx, dy = float(world_dir[0]), float(world_dir[1])
         
-        x1 = cx - dx * (GATE_WIDTH / 2)
-        y1 = cy - dy * (GATE_WIDTH / 2)
-        x2 = cx + dx * (GATE_WIDTH / 2)
-        y2 = cy + dy * (GATE_WIDTH / 2)
+        x1 = cx - dx * (GATE_WIDTH_OUTER / 2)
+        y1 = cy - dy * (GATE_WIDTH_OUTER / 2)
+        x2 = cx + dx * (GATE_WIDTH_OUTER / 2)
+        y2 = cy + dy * (GATE_WIDTH_OUTER / 2)
         
         ax.plot([x1, x2], [y1, y2], color='white', linewidth=2, solid_capstyle='round')
     

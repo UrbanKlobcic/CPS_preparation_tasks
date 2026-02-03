@@ -58,7 +58,8 @@ ENVIRONMENT = jnp.array(
     dtype=jnp.float32,
 )
 
-GATE_WIDTH = 2.7
+GATE_WIDTH_OUTER = 2.7
+GATE_WIDTH_INNER = 1.5
 MIN_POS = jnp.min(ENVIRONMENT[:, 1:4], axis=0)
 MAX_POS = jnp.max(ENVIRONMENT[:, 1:4], axis=0)
 BOUNDS = jnp.stack([MIN_POS - 5.0, MAX_POS + 5.0], axis=0)
@@ -67,30 +68,30 @@ BATTERY_MIN = 22.0
 BATTERY_MAX = 24.0
 
 class EnvParams(NamedTuple):
-    gate_radius: float = 0.75
-    max_episode_steps: int = SIM_HZ * 10
+    gate_radius: float = GATE_WIDTH_INNER / 2.0 - 0.1 # 10cm per side for safety
+    max_episode_steps: int = SIM_HZ * 12
     
     # -1 for random, >=0 for specific gate
     initial_gate_id: int = -1
     
     # rewards
     w_gate: float = 10.0
-    w_progress: float = 1.0
-    w_speed: float = 0.01
-    w_survival: float = -0.001
+    w_progress: float = 0.5
+    w_speed: float = -0.001
+    w_survival: float = -0.01
     
     # penalties
-    w_control: float = 0.0
+    w_control: float = 0.01
     w_altitude: float = 0.01
-    w_missed_gate: float = 2.0
-    w_crash: float = 10.0
+    w_missed_gate: float = 50.0
+    w_crash: float = 100.0
     w_timeout: float = 0.0
     
     # EXTENSION: noise parameters (std dev)
-    noise_pos: float = 0.01
-    noise_vel: float = 0.005
-    noise_ori: float = 0.01
-    noise_rate: float = 0.01
+    noise_pos: float = 0.05
+    noise_vel: float = 0.025
+    noise_ori: float = 0.05
+    noise_rate: float = 0.05
 
 DEFAULT_PARAMS = EnvParams()
 
@@ -289,7 +290,7 @@ class DroneRaceEnv:
         passed_gate = crossed_plane & within_radius
         missed_gate = crossed_plane & ~within_radius
         
-        next_gate_idx = jax.lax.select(passed_gate, (gate_idx + 1) % NUM_GATES, gate_idx)
+        next_gate_idx = jax.lax.select(crossed_plane, (gate_idx + 1) % NUM_GATES, gate_idx)
         dist_to_current = jnp.linalg.norm(pos_rel)
         next_gate_pos, _ = get_gate_pose(next_gate_idx)
         dist_to_next = jnp.linalg.norm(pos - next_gate_pos)
