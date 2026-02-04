@@ -68,7 +68,7 @@ BATTERY_MIN = 22.0
 BATTERY_MAX = 24.0
 
 class EnvParams(NamedTuple):
-    gate_radius: float = GATE_WIDTH_INNER / 2.0 - 0.3 # 10cm per side for safety
+    gate_radius: float = GATE_WIDTH_INNER / 2.0 - 0.3 # 30cm per side for safety
     max_episode_steps: int = SIM_HZ * 12
     
     # -1 for random, >=0 for specific gate

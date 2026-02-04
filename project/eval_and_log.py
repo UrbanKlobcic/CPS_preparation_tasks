@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from network import ActorCritic
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, SIM_HZ
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, ENVIRONMENT, SIM_HZ, GATE_WIDTH_INNER
 from plot_density import plot_density
 from rerun_viz import visualize_state_action_sequence
 
@@ -19,6 +19,7 @@ def eval_and_log_artifacts(train_state, config):
     # zero noise for evaluation + start at gate 0
     eval_params = DEFAULT_PARAMS._replace(
         max_episode_steps=SIM_HZ * 20,
+        gate_radius=GATE_WIDTH_INNER / 2,
         initial_gate_id=0,
         noise_pos=0.0,
         noise_vel=0.0,

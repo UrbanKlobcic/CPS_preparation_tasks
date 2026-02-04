@@ -14,7 +14,7 @@ import acro_step_runtime
 
 from checkpoints import load_checkpoint
 from network import ActorCritic
-from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS
+from drone_race_env import DroneRaceEnv, DEFAULT_PARAMS, GATE_WIDTH_INNER
 from plot_density import plot_density
 
 def blackbox_dynamics_adapter(x, u, dt):
@@ -36,10 +36,12 @@ def main():
 
     env = DroneRaceEnv(dynamics_fn=blackbox_dynamics_adapter)
 
+    # NOTE: must be the same setup used for training
     network = ActorCritic(env.action_size, activation="relu")
 
     eval_params = DEFAULT_PARAMS._replace(
         max_episode_steps=args.steps,
+        gate_radius=GATE_WIDTH_INNER / 2,
         initial_gate_id=0,
         noise_pos=0.0,
         noise_vel=0.0,

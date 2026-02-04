@@ -43,7 +43,7 @@ def main():
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "relu",
         "ANNEAL_LR": True,
-        "RUN_NAME": "ppo_drone_7_from_scratch",
+        "RUN_NAME": "ppo_drone_final_submission",
         "CKPT_DIR": "checkpoints",
         "DEBUG": True,
         "CHECKPOINT_FREQ": 1e7,
